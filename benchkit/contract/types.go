@@ -1,0 +1,347 @@
+// Package contract defines the stable unit API shared by the kernel and units.
+package contract
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Kind is a versioned unit identifier such as traffic.group_send/v1.
+type Kind string
+
+// PortType is a versioned capability identifier such as port.channel.group_set/v1.
+type PortType string
+
+// Labels are metric dimensions emitted by units.
+type Labels map[string]string
+
+// Definition describes a unit's stable contract.
+type Definition struct {
+	// Kind identifies the unit implementation and schema version.
+	Kind string
+	// Title is a short human-readable name.
+	Title string
+	// Description explains what the unit does.
+	Description string
+	// Inputs lists required data ports consumed by the unit.
+	Inputs []PortDef
+	// Outputs lists data ports produced by the unit.
+	Outputs []PortDef
+	// Metrics lists metric names emitted by the unit.
+	Metrics []MetricDef
+	// Artifacts lists artifact names written by the unit.
+	Artifacts []ArtifactDef
+}
+
+// PortDef describes one named input or output port.
+type PortDef struct {
+	// Name is the unit-local port name.
+	Name string
+	// Type is the versioned public port type.
+	Type PortType
+	// Optional allows an input port to be omitted.
+	Optional bool
+}
+
+// MetricDef describes one metric emitted by a unit.
+type MetricDef struct {
+	// Name is the unit-local metric name.
+	Name string
+	// Type is the metric type, for example counter or histogram.
+	Type string
+}
+
+// ArtifactDef describes one artifact emitted by a unit.
+type ArtifactDef struct {
+	// Name is the unit-local artifact name.
+	Name string
+}
+
+// Unit is the standard interface implemented by every benchmark unit.
+type Unit interface {
+	// Definition returns the static unit contract.
+	Definition() Definition
+	// Validate checks local spec shape without network IO.
+	Validate(context.Context, ValidateEnv) error
+	// Plan computes deterministic execution work before runtime side effects.
+	Plan(context.Context, PlanEnv) (Plan, error)
+	// Run executes the unit and publishes outputs through RunEnv.
+	Run(context.Context, RunEnv) error
+}
+
+// ValidateEnv is the environment available during unit validation.
+type ValidateEnv interface {
+	// UnitName returns the scenario-local unit name.
+	UnitName() string
+	// DecodeSpec decodes this unit's spec into out.
+	DecodeSpec(out any) error
+}
+
+// PlanEnv is the environment available during planning.
+type PlanEnv interface {
+	ValidateEnv
+	// RunID returns the scenario run identifier.
+	RunID() string
+	// RunDuration returns the configured measured run duration.
+	RunDuration() time.Duration
+	// WorkerCount returns the number of execution workers.
+	WorkerCount() int
+}
+
+// RunEnv is the environment available during runtime execution.
+type RunEnv interface {
+	PlanEnv
+	// Input returns one connected input port value by unit-local input name.
+	Input(name string) (any, error)
+	// SetOutput publishes a unit-local output port value.
+	SetOutput(name string, value any) error
+	// EmitCounter emits a counter delta for this unit.
+	EmitCounter(name string, delta float64, labels Labels)
+	// ObserveDuration records a duration metric sample for this unit.
+	ObserveDuration(name string, value time.Duration, labels Labels)
+	// NextID returns a deterministic per-unit identifier.
+	NextID(prefix string) string
+	// Payload returns deterministic payload bytes of size.
+	Payload(size int) []byte
+}
+
+// Plan is a unit-owned deterministic execution plan.
+type Plan struct {
+	// UnitName is the scenario-local unit name.
+	UnitName string `json:"unit_name,omitempty"`
+	// Shards contains JSON-friendly shard descriptions.
+	Shards []any `json:"shards,omitempty"`
+}
+
+// Rate represents a per-second operation rate.
+type Rate struct {
+	// PerSecond is the number of operations per second.
+	PerSecond float64 `json:"per_second"`
+}
+
+// ParseRate parses strings such as "500/s" or "12.5/s".
+func ParseRate(raw string) (Rate, error) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(raw, "/sec")
+	raw = strings.TrimSuffix(raw, "/s")
+	if raw == "" {
+		return Rate{}, fmt.Errorf("rate is empty")
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return Rate{}, fmt.Errorf("invalid rate %q: %w", raw, err)
+	}
+	return Rate{PerSecond: value}, nil
+}
+
+// UnmarshalJSON decodes either a JSON string like "500/s" or a number.
+func (r *Rate) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err == nil {
+		parsed, err := ParseRate(raw)
+		if err != nil {
+			return err
+		}
+		*r = parsed
+		return nil
+	}
+	var number float64
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	*r = Rate{PerSecond: number}
+	return nil
+}
+
+// Duration wraps time.Duration with JSON/text decoding from Go duration strings.
+type Duration struct {
+	// Duration is the decoded time duration.
+	time.Duration
+}
+
+// UnmarshalJSON decodes either a JSON duration string or a nanosecond number.
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err == nil {
+		parsed, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil {
+			return err
+		}
+		d.Duration = parsed
+		return nil
+	}
+	var nanos int64
+	if err := json.Unmarshal(data, &nanos); err != nil {
+		return err
+	}
+	d.Duration = time.Duration(nanos)
+	return nil
+}
+
+// Input returns a typed runtime input.
+func Input[T any](env RunEnv, name string) (T, error) {
+	var zero T
+	value, err := env.Input(name)
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := value.(T)
+	if !ok {
+		return zero, fmt.Errorf("input %q has unexpected type %T", name, value)
+	}
+	return typed, nil
+}
+
+// Output returns a typed output from an environment that exposes stored outputs.
+func Output[T any](reader OutputReader, name string) (T, error) {
+	var zero T
+	value, ok := reader.Output(name)
+	if !ok {
+		return zero, fmt.Errorf("output %q not found", name)
+	}
+	typed, ok := value.(T)
+	if !ok {
+		return zero, fmt.Errorf("output %q has unexpected type %T", name, value)
+	}
+	return typed, nil
+}
+
+// OutputReader is implemented by test and kernel run environments.
+type OutputReader interface {
+	// Output returns one stored output by unit-local output name.
+	Output(name string) (any, bool)
+}
+
+// TestRunEnv is a small in-memory RunEnv useful for unit tests.
+type TestRunEnv struct {
+	runID       string
+	unitName    string
+	inputs      map[string]any
+	spec        map[string]any
+	outputs     map[string]any
+	counters    map[string]float64
+	runDuration time.Duration
+
+	mu     sync.Mutex
+	nextID int64
+}
+
+// NewTestRunEnv builds a RunEnv with fixed inputs and spec.
+func NewTestRunEnv(runID, unitName string, inputs map[string]any, spec map[string]any) *TestRunEnv {
+	return &TestRunEnv{
+		runID:       runID,
+		unitName:    unitName,
+		inputs:      cloneMap(inputs),
+		spec:        cloneMap(spec),
+		outputs:     make(map[string]any),
+		counters:    make(map[string]float64),
+		runDuration: time.Second,
+	}
+}
+
+// UnitName implements ValidateEnv.
+func (e *TestRunEnv) UnitName() string { return e.unitName }
+
+// RunID implements PlanEnv.
+func (e *TestRunEnv) RunID() string { return e.runID }
+
+// RunDuration implements PlanEnv.
+func (e *TestRunEnv) RunDuration() time.Duration { return e.runDuration }
+
+// SetRunDuration changes the test run duration.
+func (e *TestRunEnv) SetRunDuration(d time.Duration) { e.runDuration = d }
+
+// WorkerCount implements PlanEnv.
+func (e *TestRunEnv) WorkerCount() int { return 1 }
+
+// DecodeSpec implements ValidateEnv.
+func (e *TestRunEnv) DecodeSpec(out any) error { return decodeMap(e.spec, out) }
+
+// Input implements RunEnv.
+func (e *TestRunEnv) Input(name string) (any, error) {
+	value, ok := e.inputs[name]
+	if !ok {
+		return nil, fmt.Errorf("input %q not found", name)
+	}
+	return value, nil
+}
+
+// SetOutput implements RunEnv.
+func (e *TestRunEnv) SetOutput(name string, value any) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.outputs[name] = value
+	return nil
+}
+
+// Output implements OutputReader.
+func (e *TestRunEnv) Output(name string) (any, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	value, ok := e.outputs[name]
+	return value, ok
+}
+
+// EmitCounter implements RunEnv.
+func (e *TestRunEnv) EmitCounter(name string, delta float64, labels Labels) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.counters[name] += delta
+}
+
+// CounterValue returns the current test counter value.
+func (e *TestRunEnv) CounterValue(name string) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.counters[name]
+}
+
+// ObserveDuration implements RunEnv.
+func (e *TestRunEnv) ObserveDuration(name string, value time.Duration, labels Labels) {}
+
+// NextID implements RunEnv.
+func (e *TestRunEnv) NextID(prefix string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.nextID++
+	if prefix == "" {
+		prefix = "id"
+	}
+	return fmt.Sprintf("%s-%d", prefix, e.nextID)
+}
+
+// Payload implements RunEnv.
+func (e *TestRunEnv) Payload(size int) []byte {
+	if size <= 0 {
+		return nil
+	}
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte('a' + i%26)
+	}
+	return payload
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func decodeMap(in map[string]any, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return err
+	}
+	return nil
+}

@@ -1,0 +1,41 @@
+version: wkbench/v2
+
+run:
+  id: group-send-demo
+  duration: 2s
+  report_dir: ./reports/group-send-demo
+
+vars:
+  groups: 2
+  members: 3
+  rate: 5/s
+
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: ${groups}
+      members_per_channel: ${members}
+      channel_prefix: demo-g
+      uid_prefix: demo-u
+
+  sender:
+    use: core.fake_group_sender
+
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: ${rate}
+      payload_size: 64
+      sender_pick: round_robin
+      ack_timeout: 1s
+
+  limits:
+    use: report.assert
+    inputs:
+      summary: traffic.summary
+    spec:
+      rules:
+        - metric: sendack_error_rate
+          op: eq
+          value: 0
