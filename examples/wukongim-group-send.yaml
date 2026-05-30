@@ -1,0 +1,65 @@
+version: wkbench/v2
+
+run:
+  id: wukongim-group-send-demo
+  duration: 5s
+  report_dir: ./reports/wukongim-group-send-demo
+
+vars:
+  users: 20
+  groups: 2
+  members: 10
+  rate: 2/s
+
+units:
+  target:
+    use: wukongim.target
+    spec:
+      api_addrs: ["http://127.0.0.1:5001"]
+      gateway_tcp_addrs: ["127.0.0.1:5100"]
+      bench_api_token: ""
+      operation_timeout: 5s
+
+  identities:
+    use: identity.pool
+    spec:
+      total: ${users}
+      uid_prefix: bench-u
+      device_prefix: bench-d
+      token_prefix: bench-token
+
+  tokens:
+    use: wukongim.prepare_tokens
+
+  groups:
+    use: wukongim.prepare_group_channels
+    spec:
+      profile: small
+      count: ${groups}
+      members_per_channel: ${members}
+      overlap: disallowed
+      batch_size: 1000
+
+  sessions:
+    use: wkproto.session_pool
+    after: [tokens, groups]
+    spec:
+      connect_rate: 100/s
+
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: ${rate}
+      payload_size: 128
+      sender_pick: round_robin
+      ack_timeout: 5s
+
+  limits:
+    use: report.assert
+    inputs:
+      summary: traffic.summary
+    spec:
+      rules:
+        - metric: sendack_error_rate
+          op: eq
+          value: 0

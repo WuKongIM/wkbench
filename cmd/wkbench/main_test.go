@@ -57,3 +57,23 @@ units:
 		t.Fatalf("expected completion message, got %q", stderr.String())
 	}
 }
+
+func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"list-units"}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"identity.pool/v1",
+		"wukongim.target/v1",
+		"wukongim.prepare_tokens/v1",
+		"wukongim.prepare_group_channels/v1",
+		"wkproto.session_pool/v1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected list-units to include %s, got:\n%s", want, out)
+		}
+	}
+}
