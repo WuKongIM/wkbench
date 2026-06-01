@@ -3,7 +3,9 @@ package kernel_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
@@ -149,6 +151,57 @@ func TestEngineRecordsReportableOutputs(t *testing.T) {
 	}
 }
 
+func TestEngineRecordsEmittedMetrics(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(metricsUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "metrics"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.metrics"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	metrics := result.Units["metrics"].Metrics
+	counter := metrics["attempt_total"]
+	if counter.Type != "counter" || counter.Count != 2 || counter.Sum != 3 {
+		t.Fatalf("unexpected counter metric: %#v", counter)
+	}
+	duration := metrics["latency"]
+	if duration.Type != "duration" || duration.Count != 2 ||
+		math.Abs(duration.Sum-0.003) > 0.0000001 ||
+		math.Abs(duration.Min-0.001) > 0.0000001 ||
+		math.Abs(duration.Max-0.002) > 0.0000001 {
+		t.Fatalf("unexpected duration metric: %#v", duration)
+	}
+}
+
+func TestEnginePreservesMetricsWhenUnitRunFails(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(failingMetricUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "metrics-fail"},
+		Units: map[string]dsl.UnitNode{
+			"fail": {Use: "test.failing_metric"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected run error")
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	metric := result.Units["fail"].Metrics["before_fail_total"]
+	if metric.Type != "counter" || metric.Count != 1 || metric.Sum != 1 {
+		t.Fatalf("unexpected failed-unit metric: %#v", metric)
+	}
+}
+
 func TestEngineClosesOutputsInReverseExecutionOrder(t *testing.T) {
 	reg := registry.New()
 	var events []string
@@ -284,6 +337,58 @@ func (reportableSourceUnit) Run(ctx context.Context, env contract.RunEnv) error 
 type reportableValue string
 
 func (v reportableValue) ReportOutput() any { return string(v) }
+
+type metricsUnit struct{}
+
+func (metricsUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.metrics/v1",
+		Metrics: []contract.MetricDef{
+			{Name: "attempt_total", Type: "counter"},
+			{Name: "latency", Type: "duration"},
+		},
+	}
+}
+
+func (metricsUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (metricsUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (metricsUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	env.EmitCounter("attempt_total", 1, nil)
+	env.EmitCounter("attempt_total", 2, nil)
+	env.ObserveDuration("latency", time.Millisecond, nil)
+	env.ObserveDuration("latency", 2*time.Millisecond, nil)
+	return nil
+}
+
+type failingMetricUnit struct{}
+
+func (failingMetricUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.failing_metric/v1",
+		Metrics: []contract.MetricDef{
+			{Name: "before_fail_total", Type: "counter"},
+		},
+	}
+}
+
+func (failingMetricUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (failingMetricUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (failingMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	env.EmitCounter("before_fail_total", 1, nil)
+	return fmt.Errorf("boom")
+}
 
 type closeableUnit struct {
 	kind       string

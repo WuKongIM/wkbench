@@ -59,6 +59,8 @@ type UnitResult struct {
 	Error string `json:"error,omitempty"`
 	// Outputs lists output ports produced by the unit.
 	Outputs map[string]OutputResult `json:"outputs,omitempty"`
+	// Metrics lists aggregated metrics emitted by the unit.
+	Metrics map[string]MetricResult `json:"metrics,omitempty"`
 	// Cleanup lists non-fatal cleanup results for closeable outputs.
 	Cleanup []CleanupResult `json:"cleanup,omitempty"`
 }
@@ -69,6 +71,22 @@ type OutputResult struct {
 	Type contract.PortType `json:"type"`
 	// Value is present only when the output opted into reports.
 	Value any `json:"value,omitempty"`
+}
+
+// MetricResult summarizes one aggregated unit metric.
+type MetricResult struct {
+	// Type is the metric kind, for example counter or duration.
+	Type string `json:"type"`
+	// Labels are the metric dimensions for labelled emissions.
+	Labels contract.Labels `json:"labels,omitempty"`
+	// Count is the number of emitted samples.
+	Count int64 `json:"count"`
+	// Sum is the accumulated value. Durations are recorded in seconds.
+	Sum float64 `json:"sum"`
+	// Min is the minimum observed value for duration metrics.
+	Min float64 `json:"min,omitempty"`
+	// Max is the maximum observed value for duration metrics.
+	Max float64 `json:"max,omitempty"`
 }
 
 // CleanupResult summarizes cleanup for one produced output.
@@ -213,15 +231,25 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			graph:    graph,
 			unitName: name,
 			outputs:  outputs,
-			counters: make(map[string]float64),
+			metrics:  newMetricStore(node.def.Metrics),
 		}
 		if err := node.unit.Run(ctx, env); err != nil {
 			result.Status = StatusWorkerFailed
-			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusWorkerFailed, Error: err.Error()}
+			result.Units[name] = UnitResult{
+				Kind:    node.def.Kind,
+				Status:  StatusWorkerFailed,
+				Error:   err.Error(),
+				Metrics: env.metrics.results(),
+			}
 			cleanup()
 			return result, fmt.Errorf("unit %q run: %w", name, err)
 		}
-		result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusCompleted, Outputs: outputs.resultsForUnit(name, node.def.Outputs)}
+		result.Units[name] = UnitResult{
+			Kind:    node.def.Kind,
+			Status:  StatusCompleted,
+			Outputs: outputs.resultsForUnit(name, node.def.Outputs),
+			Metrics: env.metrics.results(),
+		}
 	}
 	cleanup()
 	return result, nil
@@ -452,7 +480,7 @@ type runEnv struct {
 	graph    *graph
 	unitName string
 	outputs  *outputStore
-	counters map[string]float64
+	metrics  *metricStore
 	nextID   int64
 	mu       sync.Mutex
 }
@@ -472,12 +500,114 @@ func (e *runEnv) SetOutput(name string, value any) error {
 }
 
 func (e *runEnv) EmitCounter(name string, delta float64, labels contract.Labels) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.counters[name] += delta
+	e.metrics.addCounter(name, delta, labels)
 }
 
-func (e *runEnv) ObserveDuration(name string, value time.Duration, labels contract.Labels) {}
+func (e *runEnv) ObserveDuration(name string, value time.Duration, labels contract.Labels) {
+	e.metrics.observeDuration(name, value, labels)
+}
+
+type metricStore struct {
+	mu    sync.Mutex
+	types map[string]string
+	items map[string]MetricResult
+}
+
+func newMetricStore(defs []contract.MetricDef) *metricStore {
+	types := make(map[string]string, len(defs))
+	for _, def := range defs {
+		if strings.TrimSpace(def.Name) == "" {
+			continue
+		}
+		types[def.Name] = strings.TrimSpace(def.Type)
+	}
+	return &metricStore{types: types, items: make(map[string]MetricResult)}
+}
+
+func (s *metricStore) addCounter(name string, delta float64, labels contract.Labels) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := metricKey(name, labels)
+	item := s.items[key]
+	if item.Type == "" {
+		item.Type = metricType(s.types[name], "counter")
+		item.Labels = cloneLabels(labels)
+	}
+	item.Count++
+	item.Sum += delta
+	s.items[key] = item
+}
+
+func (s *metricStore) observeDuration(name string, value time.Duration, labels contract.Labels) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seconds := value.Seconds()
+	key := metricKey(name, labels)
+	item := s.items[key]
+	if item.Type == "" {
+		item.Type = metricType(s.types[name], "duration")
+		item.Labels = cloneLabels(labels)
+		item.Min = seconds
+		item.Max = seconds
+	} else {
+		if seconds < item.Min {
+			item.Min = seconds
+		}
+		if seconds > item.Max {
+			item.Max = seconds
+		}
+	}
+	item.Count++
+	item.Sum += seconds
+	s.items[key] = item
+}
+
+func (s *metricStore) results() map[string]MetricResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.items) == 0 {
+		return nil
+	}
+	results := make(map[string]MetricResult, len(s.items))
+	for key, item := range s.items {
+		results[key] = item
+	}
+	return results
+}
+
+func metricType(declared string, fallback string) string {
+	if strings.TrimSpace(declared) == "" {
+		return fallback
+	}
+	return declared
+}
+
+func metricKey(name string, labels contract.Labels) string {
+	if len(labels) == 0 {
+		return name
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+labels[key])
+	}
+	return name + "{" + strings.Join(parts, ",") + "}"
+}
+
+func cloneLabels(labels contract.Labels) contract.Labels {
+	if len(labels) == 0 {
+		return nil
+	}
+	clone := make(contract.Labels, len(labels))
+	for key, value := range labels {
+		clone[key] = value
+	}
+	return clone
+}
 
 func (e *runEnv) NextID(prefix string) string {
 	e.mu.Lock()
