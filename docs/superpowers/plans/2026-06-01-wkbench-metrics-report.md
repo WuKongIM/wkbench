@@ -16,7 +16,7 @@
 - Modify: `benchkit/kernel/kernel.go`
 - Modify: `benchkit/kernel/kernel_test.go`
 
-- [ ] **Step 1: Write failing kernel metric tests**
+- [x] **Step 1: Write failing kernel metric tests**
 
 Add the following tests to `benchkit/kernel/kernel_test.go` after `TestEngineRecordsReportableOutputs`:
 
@@ -131,7 +131,7 @@ func (failingMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
 
 Update imports in `benchkit/kernel/kernel_test.go` to include `math` and `time`.
 
-- [ ] **Step 2: Run kernel tests to verify RED**
+- [x] **Step 2: Run kernel tests to verify RED**
 
 Run:
 
@@ -141,7 +141,7 @@ GOWORK=off go test ./benchkit/kernel
 
 Expected: FAIL because `kernel.UnitResult` has no `Metrics` field and `kernel.MetricResult` does not exist.
 
-- [ ] **Step 3: Add metric result types**
+- [x] **Step 3: Add metric result types**
 
 In `benchkit/kernel/kernel.go`, add `Metrics` to `UnitResult` after `Outputs`:
 
@@ -170,7 +170,7 @@ type MetricResult struct {
 }
 ```
 
-- [ ] **Step 4: Add a metric accumulator**
+- [x] **Step 4: Add a metric accumulator**
 
 In `benchkit/kernel/kernel.go`, replace the `counters map[string]float64` field on `runEnv` with:
 
@@ -284,7 +284,7 @@ func cloneLabels(labels contract.Labels) contract.Labels {
 }
 ```
 
-- [ ] **Step 5: Wire runEnv emissions into metrics**
+- [x] **Step 5: Wire runEnv emissions into metrics**
 
 In `Engine.Run`, construct the environment with metric definitions:
 
@@ -332,7 +332,7 @@ result.Units[name] = UnitResult{
 }
 ```
 
-- [ ] **Step 6: Run kernel tests to verify GREEN**
+- [x] **Step 6: Run kernel tests to verify GREEN**
 
 Run:
 
