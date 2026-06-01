@@ -18,6 +18,13 @@ List built-in units:
 GOWORK=off go run ./cmd/wkbench list-units
 ```
 
+Create a new unit skeleton:
+
+```bash
+GOWORK=off go run ./cmd/wkbench new-unit -kind demo.group_send_probe/v1 -dir ./units/demo/group_send_probe
+GOWORK=off go test ./units/demo/group_send_probe
+```
+
 Run tests:
 
 ```bash

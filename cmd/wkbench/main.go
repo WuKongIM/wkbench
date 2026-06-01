@@ -11,6 +11,7 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	"github.com/WuKongIM/wkbench/benchkit/registry"
 	"github.com/WuKongIM/wkbench/benchkit/report"
+	"github.com/WuKongIM/wkbench/benchkit/scaffold"
 	fakegroupsender "github.com/WuKongIM/wkbench/units/core/fake_group_sender"
 	staticgroups "github.com/WuKongIM/wkbench/units/core/static_groups"
 	identitypool "github.com/WuKongIM/wkbench/units/identity/pool"
@@ -35,13 +36,15 @@ func main() {
 
 func runWithStderr(args []string, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench <list-units|validate|run>")
+		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|validate|run>")
 		return exitConfig
 	}
 	reg := defaultRegistry()
 	switch args[0] {
 	case "list-units":
 		return runListUnits(reg, stderr)
+	case "new-unit":
+		return runNewUnit(args[1:], stderr)
 	case "validate":
 		return runValidate(reg, args[1:], stderr)
 	case "run":
@@ -70,6 +73,26 @@ func runListUnits(reg *registry.Registry, stderr io.Writer) int {
 	for _, def := range reg.Definitions() {
 		fmt.Fprintln(stderr, def.Kind)
 	}
+	return exitOK
+}
+
+func runNewUnit(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("new-unit", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var spec scaffold.UnitSpec
+	fs.StringVar(&spec.Kind, "kind", "", "versioned unit kind, for example demo.echo/v1")
+	fs.StringVar(&spec.Dir, "dir", "", "target unit package directory")
+	fs.StringVar(&spec.PackageName, "package", "", "optional Go package name")
+	fs.StringVar(&spec.Title, "title", "", "optional human-readable unit title")
+	fs.StringVar(&spec.Description, "description", "", "optional unit description")
+	if err := fs.Parse(args); err != nil {
+		return exitConfig
+	}
+	if err := scaffold.NewUnit(spec); err != nil {
+		fmt.Fprintf(stderr, "new-unit failed: %v\n", err)
+		return exitConfig
+	}
+	fmt.Fprintf(stderr, "created unit %s in %s\n", spec.Kind, spec.Dir)
 	return exitOK
 }
 
