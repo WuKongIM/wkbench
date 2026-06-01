@@ -565,12 +565,20 @@ func (s *metricStore) observeDuration(name string, value time.Duration, labels c
 func (s *metricStore) results() map[string]MetricResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.items) == 0 {
+	if len(s.items) == 0 && len(s.types) == 0 {
 		return nil
 	}
-	results := make(map[string]MetricResult, len(s.items))
+	results := make(map[string]MetricResult, len(s.items)+len(s.types))
+	emittedNames := make(map[string]bool, len(s.items))
 	for key, item := range s.items {
 		results[key] = item
+		emittedNames[metricNameFromKey(key)] = true
+	}
+	for name, typ := range s.types {
+		if emittedNames[name] {
+			continue
+		}
+		results[name] = MetricResult{Type: metricType(typ, "counter")}
 	}
 	return results
 }
@@ -596,6 +604,13 @@ func metricKey(name string, labels contract.Labels) string {
 		parts = append(parts, key+"="+labels[key])
 	}
 	return name + "{" + strings.Join(parts, ",") + "}"
+}
+
+func metricNameFromKey(key string) string {
+	if index := strings.IndexByte(key, '{'); index >= 0 {
+		return key[:index]
+	}
+	return key
 }
 
 func cloneLabels(labels contract.Labels) contract.Labels {

@@ -170,6 +170,10 @@ func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	if counter.Type != "counter" || counter.Count != 2 || counter.Sum != 3 {
 		t.Fatalf("unexpected counter metric: %#v", counter)
 	}
+	declaredCounter := metrics["not_emitted_total"]
+	if declaredCounter.Type != "counter" || declaredCounter.Count != 0 || declaredCounter.Sum != 0 {
+		t.Fatalf("unexpected declared counter metric: %#v", declaredCounter)
+	}
 	duration := metrics["latency"]
 	if duration.Type != "duration" || duration.Count != 2 ||
 		math.Abs(duration.Sum-0.003) > 0.0000001 ||
@@ -345,6 +349,7 @@ func (metricsUnit) Definition() contract.Definition {
 		Kind: "test.metrics/v1",
 		Metrics: []contract.MetricDef{
 			{Name: "attempt_total", Type: "counter"},
+			{Name: "not_emitted_total", Type: "counter"},
 			{Name: "latency", Type: "duration"},
 		},
 	}
