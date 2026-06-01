@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	trafficport "github.com/WuKongIM/wkbench/benchkit/ports/traffic"
@@ -52,6 +53,14 @@ func summaryMarkdown(result kernel.Result) string {
 		for _, outputName := range outputNames {
 			out += formatOutput(outputName, unit.Outputs[outputName])
 		}
+		metricNames := make([]string, 0, len(unit.Metrics))
+		for metricName := range unit.Metrics {
+			metricNames = append(metricNames, metricName)
+		}
+		sort.Strings(metricNames)
+		for _, metricName := range metricNames {
+			out += formatMetric(metricName, unit.Metrics[metricName])
+		}
 		for _, cleanup := range unit.Cleanup {
 			out += formatCleanup(cleanup)
 		}
@@ -78,6 +87,44 @@ func formatOutputValue(value any) string {
 		}
 		return fmt.Sprintf("value: `%s`", data)
 	}
+}
+
+func formatMetric(name string, metric kernel.MetricResult) string {
+	switch metric.Type {
+	case "duration":
+		avg := 0.0
+		if metric.Count > 0 {
+			avg = metric.Sum / float64(metric.Count)
+		}
+		return fmt.Sprintf(
+			"  - metric `%s` `duration`: count `%d`, avg `%s`, min `%s`, max `%s`\n",
+			name,
+			metric.Count,
+			formatSeconds(avg),
+			formatSeconds(metric.Min),
+			formatSeconds(metric.Max),
+		)
+	default:
+		metricType := metric.Type
+		if metricType == "" {
+			metricType = "counter"
+		}
+		return fmt.Sprintf(
+			"  - metric `%s` `%s`: count `%d`, sum `%s`\n",
+			name,
+			metricType,
+			metric.Count,
+			formatNumber(metric.Sum),
+		)
+	}
+}
+
+func formatNumber(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func formatSeconds(value float64) string {
+	return fmt.Sprintf("%.4fs", value)
 }
 
 func formatCleanup(cleanup kernel.CleanupResult) string {

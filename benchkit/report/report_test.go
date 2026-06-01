@@ -64,6 +64,60 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 	}
 }
 
+func TestWriteDirIncludesMetrics(t *testing.T) {
+	dir := t.TempDir()
+	result := kernel.Result{
+		RunID:  "demo",
+		Status: kernel.StatusCompleted,
+		Units: map[string]kernel.UnitResult{
+			"traffic": {
+				Kind:   "traffic.group_send/v1",
+				Status: kernel.StatusCompleted,
+				Metrics: map[string]kernel.MetricResult{
+					"send_attempt_total": {
+						Type:  "counter",
+						Count: 2,
+						Sum:   3,
+					},
+					"sendack_latency": {
+						Type:  "duration",
+						Count: 2,
+						Sum:   0.003,
+						Min:   0.001,
+						Max:   0.002,
+					},
+				},
+			},
+		},
+	}
+	if err := report.WriteDir(dir, result); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	jsonData, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonText := string(jsonData)
+	for _, want := range []string{`"metrics"`, `"send_attempt_total"`, `"sendack_latency"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("report.json missing %q:\n%s", want, jsonText)
+		}
+	}
+	markdownData, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdown := string(markdownData)
+	for _, want := range []string{
+		"metric `send_attempt_total` `counter`: count `2`, sum `3`",
+		"metric `sendack_latency` `duration`: count `2`, avg `0.0015s`, min `0.0010s`, max `0.0020s`",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("summary.md missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func TestWriteDirIncludesCleanupErrors(t *testing.T) {
 	dir := t.TempDir()
 	result := kernel.Result{
