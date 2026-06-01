@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -601,7 +602,7 @@ func metricKey(name string, labels contract.Labels) string {
 	sort.Strings(keys)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, key+"="+labels[key])
+		parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(labels[key]))
 	}
 	return name + "{" + strings.Join(parts, ",") + "}"
 }

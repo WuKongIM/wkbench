@@ -174,6 +174,14 @@ func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	if declaredCounter.Type != "counter" || declaredCounter.Count != 0 || declaredCounter.Sum != 0 {
 		t.Fatalf("unexpected declared counter metric: %#v", declaredCounter)
 	}
+	labelledA := metrics["labelled_total{a=b%2Cc%3Dd}"]
+	if labelledA.Type != "counter" || labelledA.Count != 1 || labelledA.Sum != 1 || labelledA.Labels["a"] != "b,c=d" {
+		t.Fatalf("unexpected first labelled metric: %#v", labelledA)
+	}
+	labelledB := metrics["labelled_total{a=b,c=d}"]
+	if labelledB.Type != "counter" || labelledB.Count != 1 || labelledB.Sum != 2 || labelledB.Labels["a"] != "b" || labelledB.Labels["c"] != "d" {
+		t.Fatalf("unexpected second labelled metric: %#v", labelledB)
+	}
 	duration := metrics["latency"]
 	if duration.Type != "duration" || duration.Count != 2 ||
 		math.Abs(duration.Sum-0.003) > 0.0000001 ||
@@ -350,6 +358,7 @@ func (metricsUnit) Definition() contract.Definition {
 		Metrics: []contract.MetricDef{
 			{Name: "attempt_total", Type: "counter"},
 			{Name: "not_emitted_total", Type: "counter"},
+			{Name: "labelled_total", Type: "counter"},
 			{Name: "latency", Type: "duration"},
 		},
 	}
@@ -366,6 +375,10 @@ func (metricsUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error
 func (metricsUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	env.EmitCounter("attempt_total", 1, nil)
 	env.EmitCounter("attempt_total", 2, nil)
+	labels := contract.Labels{"a": "b,c=d"}
+	env.EmitCounter("labelled_total", 1, labels)
+	labels["a"] = "mutated"
+	env.EmitCounter("labelled_total", 2, contract.Labels{"a": "b", "c": "d"})
 	env.ObserveDuration("latency", time.Millisecond, nil)
 	env.ObserveDuration("latency", 2*time.Millisecond, nil)
 	return nil
