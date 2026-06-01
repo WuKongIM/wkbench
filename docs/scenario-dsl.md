@@ -42,6 +42,15 @@ limits:
 
 Inputs may be omitted when the kernel can find exactly one provider with the required port type. Ambiguous matches are rejected.
 
+Inspect resolved wiring before a run:
+
+```bash
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml -format json
+```
+
+`explain` uses the same graph builder as `validate` and `run`, so auto-wired inputs and execution order match runtime behavior. It calls unit validation only; it does not plan, run, write reports, or contact target services.
+
 ## `after`
 
 Use `after` for ordering dependencies that do not pass data.

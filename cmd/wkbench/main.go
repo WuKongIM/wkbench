@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ func main() {
 
 func runWithStderr(args []string, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|validate|run>")
+		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|explain|validate|run>")
 		return exitConfig
 	}
 	reg := defaultRegistry()
@@ -45,6 +46,8 @@ func runWithStderr(args []string, stderr io.Writer) int {
 		return runListUnits(reg, stderr)
 	case "new-unit":
 		return runNewUnit(args[1:], stderr)
+	case "explain":
+		return runExplain(reg, args[1:], stderr)
 	case "validate":
 		return runValidate(reg, args[1:], stderr)
 	case "run":
@@ -96,6 +99,47 @@ func runNewUnit(args []string, stderr io.Writer) int {
 	return exitOK
 }
 
+func runExplain(reg *registry.Registry, args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var scenarioPath string
+	var format string
+	fs.StringVar(&scenarioPath, "scenario", "", "path to wkbench/v2 scenario yaml")
+	fs.StringVar(&format, "format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return exitConfig
+	}
+	if scenarioPath == "" {
+		fmt.Fprintln(stderr, "-scenario is required")
+		return exitConfig
+	}
+	if format != "text" && format != "json" {
+		fmt.Fprintf(stderr, "unsupported explain format %q\n", format)
+		return exitConfig
+	}
+	scenario, code := loadScenario(scenarioPath, stderr)
+	if code != exitOK {
+		return code
+	}
+	explanation, err := kernel.New(reg).Explain(context.Background(), scenario)
+	if err != nil {
+		fmt.Fprintf(stderr, "explain failed: %v\n", err)
+		return exitConfig
+	}
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(explanation, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "marshal explanation failed: %v\n", err)
+			return exitInternal
+		}
+		fmt.Fprintln(stderr, string(data))
+	default:
+		writeExplainText(stderr, explanation)
+	}
+	return exitOK
+}
+
 func runValidate(reg *registry.Registry, args []string, stderr io.Writer) int {
 	scenario, code := parseScenarioArg(args, stderr)
 	if code != exitOK {
@@ -141,6 +185,10 @@ func parseScenarioArg(args []string, stderr io.Writer) (dsl.Scenario, int) {
 		fmt.Fprintln(stderr, "-scenario is required")
 		return dsl.Scenario{}, exitConfig
 	}
+	return loadScenario(scenarioPath, stderr)
+}
+
+func loadScenario(scenarioPath string, stderr io.Writer) (dsl.Scenario, int) {
 	file, err := os.Open(scenarioPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "open scenario failed: %v\n", err)
@@ -153,4 +201,58 @@ func parseScenarioArg(args []string, stderr io.Writer) (dsl.Scenario, int) {
 		return dsl.Scenario{}, exitConfig
 	}
 	return scenario, exitOK
+}
+
+func writeExplainText(w io.Writer, explanation kernel.Explanation) {
+	fmt.Fprintf(w, "Run: %s\n", explanation.RunID)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Execution Order:")
+	for i, name := range explanation.Order {
+		unit := explanation.Units[name]
+		if unit.Kind == "" {
+			fmt.Fprintf(w, "  %d. %s\n", i+1, name)
+			continue
+		}
+		fmt.Fprintf(w, "  %d. %s (%s)\n", i+1, name, unit.Kind)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Units:")
+	for _, name := range explanation.Order {
+		unit := explanation.Units[name]
+		fmt.Fprintf(w, "  %s: %s\n", name, unit.Kind)
+		if len(unit.After) > 0 {
+			fmt.Fprintf(w, "    after: %v\n", unit.After)
+		}
+		writeExplainPorts(w, "inputs", unit.Inputs)
+		writeExplainPorts(w, "outputs", unit.Outputs)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Wiring:")
+	if len(explanation.Wiring) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	for _, binding := range explanation.Wiring {
+		fmt.Fprintf(w, "  %s.%s <- %s.%s (%s)\n",
+			binding.Unit,
+			binding.Input,
+			binding.SourceUnit,
+			binding.SourceOutput,
+			binding.Type,
+		)
+	}
+}
+
+func writeExplainPorts(w io.Writer, title string, ports []kernel.ExplainPort) {
+	if len(ports) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "    %s:\n", title)
+	for _, port := range ports {
+		optional := ""
+		if port.Optional {
+			optional = " optional"
+		}
+		fmt.Fprintf(w, "      %s %s%s\n", port.Name, port.Type, optional)
+	}
 }

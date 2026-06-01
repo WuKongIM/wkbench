@@ -79,6 +79,54 @@ type CleanupResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Explanation describes a scenario graph without executing it.
+type Explanation struct {
+	// RunID is copied from the scenario.
+	RunID string `json:"run_id"`
+	// Order is the deterministic unit execution order.
+	Order []string `json:"order"`
+	// Units contains resolved unit contracts keyed by scenario-local name.
+	Units map[string]ExplainUnit `json:"units"`
+	// Wiring lists resolved input bindings in execution order.
+	Wiring []ExplainBinding `json:"wiring,omitempty"`
+}
+
+// ExplainUnit describes one resolved unit in an explanation.
+type ExplainUnit struct {
+	// Kind is the resolved versioned unit kind.
+	Kind string `json:"kind"`
+	// Inputs lists declared input ports.
+	Inputs []ExplainPort `json:"inputs,omitempty"`
+	// Outputs lists declared output ports.
+	Outputs []ExplainPort `json:"outputs,omitempty"`
+	// After lists explicit scenario ordering dependencies.
+	After []string `json:"after,omitempty"`
+}
+
+// ExplainPort describes one input or output port in an explanation.
+type ExplainPort struct {
+	// Name is the unit-local port name.
+	Name string `json:"name"`
+	// Type is the versioned public port type.
+	Type contract.PortType `json:"type"`
+	// Optional means the input may be omitted.
+	Optional bool `json:"optional,omitempty"`
+}
+
+// ExplainBinding describes one resolved input binding.
+type ExplainBinding struct {
+	// Unit is the scenario-local consuming unit name.
+	Unit string `json:"unit"`
+	// Input is the consuming unit-local input port name.
+	Input string `json:"input"`
+	// SourceUnit is the scenario-local producing unit name.
+	SourceUnit string `json:"source_unit"`
+	// SourceOutput is the producing unit-local output port name.
+	SourceOutput string `json:"source_output"`
+	// Type is the versioned public port type shared by both ports.
+	Type contract.PortType `json:"type"`
+}
+
 // Validate checks graph wiring and unit specs without executing units.
 func (e *Engine) Validate(ctx context.Context, scenario dsl.Scenario) error {
 	graph, err := e.buildGraph(scenario)
@@ -92,6 +140,45 @@ func (e *Engine) Validate(ctx context.Context, scenario dsl.Scenario) error {
 		}
 	}
 	return nil
+}
+
+// Explain checks graph wiring and unit specs, then returns a non-executing graph summary.
+func (e *Engine) Explain(ctx context.Context, scenario dsl.Scenario) (Explanation, error) {
+	graph, err := e.buildGraph(scenario)
+	if err != nil {
+		return Explanation{}, err
+	}
+	explanation := Explanation{
+		RunID: scenario.Run.ID,
+		Order: append([]string(nil), graph.order...),
+		Units: make(map[string]ExplainUnit, len(graph.nodes)),
+	}
+	for _, name := range graph.order {
+		node := graph.nodes[name]
+		if err := node.unit.Validate(ctx, newBaseEnv(scenario, name, node.dsl.Spec)); err != nil {
+			return Explanation{}, fmt.Errorf("unit %q validate: %w", name, err)
+		}
+		explanation.Units[name] = ExplainUnit{
+			Kind:    node.def.Kind,
+			Inputs:  explainPorts(node.def.Inputs),
+			Outputs: explainPorts(node.def.Outputs),
+			After:   append([]string(nil), node.after...),
+		}
+		for _, input := range node.def.Inputs {
+			ref, ok := node.bindings[input.Name]
+			if !ok {
+				continue
+			}
+			explanation.Wiring = append(explanation.Wiring, ExplainBinding{
+				Unit:         name,
+				Input:        input.Name,
+				SourceUnit:   ref.unit,
+				SourceOutput: ref.port,
+				Type:         input.Type,
+			})
+		}
+	}
+	return explanation, nil
 }
 
 // Run validates, plans, and executes a scenario graph.
@@ -138,6 +225,17 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 	}
 	cleanup()
 	return result, nil
+}
+
+func explainPorts(defs []contract.PortDef) []ExplainPort {
+	if len(defs) == 0 {
+		return nil
+	}
+	ports := make([]ExplainPort, 0, len(defs))
+	for _, def := range defs {
+		ports = append(ports, ExplainPort{Name: def.Name, Type: def.Type, Optional: def.Optional})
+	}
+	return ports
 }
 
 type graph struct {

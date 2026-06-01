@@ -59,6 +59,73 @@ func TestEngineRejectsAmbiguousAutoWire(t *testing.T) {
 	}
 }
 
+func TestEngineExplainShowsOrderContractsAndWiring(t *testing.T) {
+	reg := registry.New()
+	var calls []string
+	reg.MustRegister(sourceUnit{calls: &calls})
+	reg.MustRegister(sinkUnit{calls: &calls})
+
+	explanation, err := kernel.New(reg).Explain(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "explain"},
+		Units: map[string]dsl.UnitNode{
+			"source": {Use: "test.source"},
+			"sink":   {Use: "test.sink"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("explain scenario: %v", err)
+	}
+	if explanation.RunID != "explain" {
+		t.Fatalf("unexpected run id %q", explanation.RunID)
+	}
+	if fmt.Sprint(explanation.Order) != "[source sink]" {
+		t.Fatalf("unexpected order: %#v", explanation.Order)
+	}
+	source := explanation.Units["source"]
+	if source.Kind != "test.source/v1" {
+		t.Fatalf("unexpected source kind %q", source.Kind)
+	}
+	if len(source.Outputs) != 1 || source.Outputs[0].Name != "value" || source.Outputs[0].Type != testValuePort {
+		t.Fatalf("unexpected source outputs: %#v", source.Outputs)
+	}
+	sink := explanation.Units["sink"]
+	if sink.Kind != "test.sink/v1" {
+		t.Fatalf("unexpected sink kind %q", sink.Kind)
+	}
+	if len(sink.Inputs) != 1 || sink.Inputs[0].Name != "input" || sink.Inputs[0].Type != testValuePort {
+		t.Fatalf("unexpected sink inputs: %#v", sink.Inputs)
+	}
+	if len(explanation.Wiring) != 1 {
+		t.Fatalf("unexpected wiring: %#v", explanation.Wiring)
+	}
+	binding := explanation.Wiring[0]
+	if binding.Unit != "sink" || binding.Input != "input" || binding.SourceUnit != "source" || binding.SourceOutput != "value" || binding.Type != testValuePort {
+		t.Fatalf("unexpected binding: %#v", binding)
+	}
+}
+
+func TestEngineExplainValidatesWithoutPlanningOrRunning(t *testing.T) {
+	reg := registry.New()
+	var calls []string
+	reg.MustRegister(lifecycleProbeUnit{calls: &calls})
+
+	_, err := kernel.New(reg).Explain(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "lifecycle"},
+		Units: map[string]dsl.UnitNode{
+			"probe": {Use: "test.lifecycle_probe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("explain scenario: %v", err)
+	}
+	want := []string{"validate:probe"}
+	if fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Fatalf("unexpected lifecycle calls got %v want %v", calls, want)
+	}
+}
+
 func TestEngineRecordsReportableOutputs(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(reportableSourceUnit{})
@@ -304,4 +371,27 @@ func (u sinkUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	}
 	*u.calls = append(*u.calls, env.UnitName()+":"+value)
 	return nil
+}
+
+type lifecycleProbeUnit struct {
+	calls *[]string
+}
+
+func (lifecycleProbeUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.lifecycle_probe/v1"}
+}
+
+func (u lifecycleProbeUnit) Validate(_ context.Context, env contract.ValidateEnv) error {
+	*u.calls = append(*u.calls, "validate:"+env.UnitName())
+	return nil
+}
+
+func (u lifecycleProbeUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	*u.calls = append(*u.calls, "plan")
+	return contract.Plan{}, fmt.Errorf("plan must not run during explain")
+}
+
+func (u lifecycleProbeUnit) Run(context.Context, contract.RunEnv) error {
+	*u.calls = append(*u.calls, "run")
+	return fmt.Errorf("run must not run during explain")
 }

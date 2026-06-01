@@ -12,6 +12,15 @@ Run the dry-run group SEND example:
 GOWORK=off go run ./cmd/wkbench run -scenario ./examples/group-send.yaml
 ```
 
+Explain a scenario graph before running it:
+
+```bash
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/group-send.yaml
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/group-send.yaml -format json
+```
+
+`explain` validates specs and wiring, then prints the execution order and resolved input bindings. It does not run units, create reports, or touch target services.
+
 List built-in units:
 
 ```bash
@@ -47,6 +56,13 @@ Validate the real WuKongIM example without connecting:
 
 ```bash
 GOWORK=off go run ./cmd/wkbench validate -scenario ./examples/wukongim-group-send.yaml
+```
+
+Inspect the same scenario's graph without connecting:
+
+```bash
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml
+GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml -format json
 ```
 
 Run the single-node WuKongIM smoke after starting a target with bench API enabled:

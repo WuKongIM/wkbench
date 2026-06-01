@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/WuKongIM/wkbench/benchkit/kernel"
 )
 
 func TestRunCommandExecutesScenarioAndWritesReport(t *testing.T) {
@@ -78,6 +81,94 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 	}
 }
 
+func TestExplainCommandPrintsScenarioGraph(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: cli-explain
+  duration: 1s
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: 2/s
+      payload_size: 16
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"explain", "-scenario", scenarioPath}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Run: cli-explain",
+		"Execution Order:",
+		"1. groups",
+		"2. sender",
+		"3. traffic",
+		"Wiring:",
+		"traffic.channels <- groups.groups",
+		"traffic.sender <- sender.sender",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected explain output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestExplainCommandPrintsJSON(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: cli-explain-json
+  duration: 1s
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: 2/s
+      payload_size: 16
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"explain", "-scenario", scenarioPath, "-format", "json"}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	var explanation kernel.Explanation
+	if err := json.Unmarshal(stderr.Bytes(), &explanation); err != nil {
+		t.Fatalf("unmarshal explanation: %v\n%s", err, stderr.String())
+	}
+	if explanation.RunID != "cli-explain-json" {
+		t.Fatalf("unexpected run id %q", explanation.RunID)
+	}
+	if strings.Join(explanation.Order, ",") != "groups,sender,traffic" {
+		t.Fatalf("unexpected order: %#v", explanation.Order)
+	}
+	if len(explanation.Wiring) != 2 {
+		t.Fatalf("unexpected wiring: %#v", explanation.Wiring)
+	}
+	binding := explanation.Wiring[1]
+	if binding.Unit != "traffic" || binding.Input != "sender" || binding.SourceUnit != "sender" || binding.SourceOutput != "sender" {
+		t.Fatalf("unexpected sender binding: %#v", binding)
+	}
+}
+
 func TestNewUnitCommandScaffoldsUnit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "units", "custom", "echo")
 
@@ -123,4 +214,13 @@ func TestNewUnitCommandRejectsOverwrite(t *testing.T) {
 	if !strings.Contains(stderr.String(), "already exists") {
 		t.Fatalf("expected overwrite error, got %q", stderr.String())
 	}
+}
+
+func writeScenarioFile(t *testing.T, content string) string {
+	t.Helper()
+	scenarioPath := filepath.Join(t.TempDir(), "scenario.yaml")
+	if err := os.WriteFile(scenarioPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return scenarioPath
 }
