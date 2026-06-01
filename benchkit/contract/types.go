@@ -237,6 +237,7 @@ type TestRunEnv struct {
 	spec        map[string]any
 	outputs     map[string]any
 	counters    map[string]float64
+	durations   map[string][]time.Duration
 	runDuration time.Duration
 
 	mu     sync.Mutex
@@ -252,6 +253,7 @@ func NewTestRunEnv(runID, unitName string, inputs map[string]any, spec map[strin
 		spec:        cloneMap(spec),
 		outputs:     make(map[string]any),
 		counters:    make(map[string]float64),
+		durations:   make(map[string][]time.Duration),
 		runDuration: time.Second,
 	}
 }
@@ -314,7 +316,19 @@ func (e *TestRunEnv) CounterValue(name string) float64 {
 }
 
 // ObserveDuration implements RunEnv.
-func (e *TestRunEnv) ObserveDuration(name string, value time.Duration, labels Labels) {}
+func (e *TestRunEnv) ObserveDuration(name string, value time.Duration, labels Labels) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.durations[name] = append(e.durations[name], value)
+}
+
+// DurationValues returns recorded duration samples for name.
+func (e *TestRunEnv) DurationValues(name string) []time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	values := e.durations[name]
+	return append([]time.Duration(nil), values...)
+}
 
 // NextID implements RunEnv.
 func (e *TestRunEnv) NextID(prefix string) string {
