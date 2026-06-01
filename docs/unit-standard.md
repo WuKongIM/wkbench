@@ -129,6 +129,29 @@ If the unit produces a reportable output, return a small JSON-friendly value
 that implements `contract.ReportableOutput`. Do not expose secrets, tokens, or
 live client handles through report values.
 
+## Metrics
+
+Units emit metrics only through `RunEnv`:
+
+```go
+env.EmitCounter("send_attempt_total", 1, nil)
+env.ObserveDuration("sendack_latency", latency, nil)
+```
+
+Declare metrics in `Definition` so `explain`, reports, and future planners can
+describe the unit contract:
+
+```go
+Metrics: []contract.MetricDef{
+	{Name: "send_attempt_total", Type: "counter"},
+	{Name: "sendack_latency", Type: "duration"},
+}
+```
+
+The kernel aggregates metrics per unit. Counters record emission count and
+delta sum. Durations record count, sum, min, and max in seconds. Metrics are
+written to `report.json` and rendered in `summary.md`.
+
 ## Runtime Resource Cleanup
 
 If an output owns runtime resources, such as sockets, files, goroutines, or
