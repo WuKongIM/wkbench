@@ -46,6 +46,19 @@ func TestGroupSendUsesPortsAndEmitsSummary(t *testing.T) {
 	}
 }
 
+func TestGroupSendDeclaresDurationMetric(t *testing.T) {
+	def := groupsend.Unit{}.Definition()
+	for _, metric := range def.Metrics {
+		if metric.Name == "sendack_latency" {
+			if metric.Type != "duration" {
+				t.Fatalf("sendack_latency metric type = %q, want duration", metric.Type)
+			}
+			return
+		}
+	}
+	t.Fatal("sendack_latency metric is not declared")
+}
+
 type fakeGroupSet struct{}
 
 func (fakeGroupSet) Count() int {

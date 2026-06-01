@@ -55,7 +55,7 @@ func (Unit) Definition() contract.Definition {
 			{Name: "send_attempt_total", Type: "counter"},
 			{Name: "sendack_success_total", Type: "counter"},
 			{Name: "sendack_error_total", Type: "counter"},
-			{Name: "sendack_latency", Type: "histogram"},
+			{Name: "sendack_latency", Type: "duration"},
 		},
 	}
 }
