@@ -56,6 +56,7 @@ type wkClient struct {
 	token            string
 
 	mu            sync.Mutex
+	opMu          sync.Mutex
 	writeMu       sync.Mutex
 	conn          net.Conn
 	privateKey    [32]byte
@@ -128,6 +129,19 @@ func (c *wkClient) Connect(ctx context.Context, uid, deviceID string) error {
 }
 
 func (c *wkClient) SendGroupAndWaitAck(ctx context.Context, req wkprotoport.GroupSendRequest) (wkprotoport.SendAck, error) {
+	return c.SendAndWaitAck(ctx, wkprotoport.SendRequest{
+		ChannelID:   req.ChannelID,
+		ChannelType: 2,
+		SenderUID:   req.SenderUID,
+		ClientMsgNo: req.ClientMsgNo,
+		Payload:     req.Payload,
+		Timeout:     req.Timeout,
+	})
+}
+
+func (c *wkClient) SendAndWaitAck(ctx context.Context, req wkprotoport.SendRequest) (wkprotoport.SendAck, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 	ctx, cancel := c.withRequestTimeout(ctx, req.Timeout)
 	defer cancel()
 	c.clientSeq++
@@ -135,7 +149,7 @@ func (c *wkClient) SendGroupAndWaitAck(ctx context.Context, req wkprotoport.Grou
 		ClientSeq:   c.clientSeq,
 		ClientMsgNo: req.ClientMsgNo,
 		ChannelID:   req.ChannelID,
-		ChannelType: 2,
+		ChannelType: req.ChannelType,
 		Payload:     req.Payload,
 	}
 	if err := c.send(ctx, send); err != nil {

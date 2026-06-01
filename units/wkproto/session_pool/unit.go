@@ -18,6 +18,7 @@ const kind = "wkproto.session_pool/v1"
 // Client is the session client retained by the pool.
 type Client interface {
 	wkprotoport.GroupClient
+	wkprotoport.MessageClient
 	// Close releases the underlying session.
 	Close() error
 }
@@ -55,6 +56,7 @@ func (Unit) Definition() contract.Definition {
 		},
 		Outputs: []contract.PortDef{
 			{Name: "group_sender", Type: wkprotoport.GroupSenderV1},
+			{Name: "message_sender", Type: wkprotoport.MessageSenderV1},
 		},
 	}
 }
@@ -118,7 +120,10 @@ func (u Unit) Run(ctx context.Context, env contract.RunEnv) error {
 		}
 		pool.clients[identity.UID] = client
 	}
-	return env.SetOutput("group_sender", pool)
+	if err := env.SetOutput("group_sender", pool); err != nil {
+		return err
+	}
+	return env.SetOutput("message_sender", pool)
 }
 
 // Pool stores connected clients by uid.
@@ -128,6 +133,12 @@ type Pool struct {
 
 // Client implements wkproto.GroupSender.
 func (p *Pool) Client(uid string) (wkprotoport.GroupClient, bool) {
+	client, ok := p.clients[uid]
+	return client, ok
+}
+
+// MessageClient implements wkproto.MessageSender.
+func (p *Pool) MessageClient(uid string) (wkprotoport.MessageClient, bool) {
 	client, ok := p.clients[uid]
 	return client, ok
 }

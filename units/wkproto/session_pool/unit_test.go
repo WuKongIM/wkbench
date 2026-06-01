@@ -41,6 +41,27 @@ func TestSessionPoolConnectsIdentitiesAndOutputsGroupSender(t *testing.T) {
 	if _, ok := sender.Client("u1"); !ok {
 		t.Fatal("expected client for u1")
 	}
+	messageSender, err := contract.Output[wkprotoport.MessageSender](env, "message_sender")
+	if err != nil {
+		t.Fatalf("message_sender output: %v", err)
+	}
+	messageClient, ok := messageSender.MessageClient("u2")
+	if !ok {
+		t.Fatal("expected message client for u2")
+	}
+	ack, err := messageClient.SendAndWaitAck(context.Background(), wkprotoport.SendRequest{
+		ChannelID:   "u1",
+		ChannelType: 1,
+		SenderUID:   "u2",
+		ClientMsgNo: "msg-1",
+		Payload:     []byte("hello"),
+	})
+	if err != nil {
+		t.Fatalf("generic send: %v", err)
+	}
+	if ack.MessageID != 1 {
+		t.Fatalf("unexpected generic send ack: %#v", ack)
+	}
 }
 
 type connectCall struct {
@@ -69,6 +90,10 @@ func (s tokenSource) TokenFor(uid string) (string, bool) {
 type fakeClient struct{}
 
 func (fakeClient) SendGroupAndWaitAck(context.Context, wkprotoport.GroupSendRequest) (wkprotoport.SendAck, error) {
+	return wkprotoport.SendAck{MessageID: 1}, nil
+}
+
+func (fakeClient) SendAndWaitAck(context.Context, wkprotoport.SendRequest) (wkprotoport.SendAck, error) {
 	return wkprotoport.SendAck{MessageID: 1}, nil
 }
 
