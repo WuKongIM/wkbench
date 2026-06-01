@@ -348,7 +348,7 @@ Expected: PASS.
 - Modify: `benchkit/report/report.go`
 - Modify: `benchkit/report/report_test.go`
 
-- [ ] **Step 1: Write failing report tests**
+- [x] **Step 1: Write failing report tests**
 
 Add the following test to `benchkit/report/report_test.go` after `TestWriteDirIncludesTrafficSummary`:
 
@@ -408,7 +408,7 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run report tests to verify RED**
+- [x] **Step 2: Run report tests to verify RED**
 
 Run:
 
@@ -418,7 +418,7 @@ GOWORK=off go test ./benchkit/report
 
 Expected: FAIL because `summary.md` does not render metrics yet.
 
-- [ ] **Step 3: Render metrics in summary.md**
+- [x] **Step 3: Render metrics in summary.md**
 
 In `benchkit/report/report.go`, add `strconv` to imports.
 
@@ -477,7 +477,7 @@ func formatSeconds(value float64) string {
 }
 ```
 
-- [ ] **Step 4: Run report tests to verify GREEN**
+- [x] **Step 4: Run report tests to verify GREEN**
 
 Run:
 
