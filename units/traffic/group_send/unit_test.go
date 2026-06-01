@@ -2,6 +2,7 @@ package groupsend_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,6 +44,49 @@ func TestGroupSendUsesPortsAndEmitsSummary(t *testing.T) {
 	}
 	if got := env.CounterValue("sendack_success_total"); got != 4 {
 		t.Fatalf("expected four successes, got %v", got)
+	}
+}
+
+func TestGroupSendPlanReportsDeterministicShard(t *testing.T) {
+	unit := groupsend.Unit{}
+	env := contract.NewTestRunEnv("run-1", "traffic", nil, map[string]any{
+		"rate":          "2.5/s",
+		"payload_size":  32,
+		"sender_pick":   "round_robin",
+		"max_in_flight": 8,
+	})
+	env.SetRunDuration(2 * time.Second)
+
+	if err := unit.Validate(context.Background(), env); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	plan, err := unit.Plan(context.Background(), env)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.UnitName != "traffic" {
+		t.Fatalf("unexpected unit name %q", plan.UnitName)
+	}
+	if len(plan.Shards) != 1 {
+		t.Fatalf("unexpected shards: %#v", plan.Shards)
+	}
+	data, err := json.Marshal(plan.Shards[0])
+	if err != nil {
+		t.Fatalf("marshal shard: %v", err)
+	}
+	var shard struct {
+		TotalMessages int64   `json:"total_messages"`
+		RatePerSecond float64 `json:"rate_per_second"`
+		DurationMS    int64   `json:"duration_ms"`
+		PayloadSize   int     `json:"payload_size"`
+		SenderPick    string  `json:"sender_pick"`
+		MaxInFlight   int     `json:"max_in_flight"`
+	}
+	if err := json.Unmarshal(data, &shard); err != nil {
+		t.Fatalf("unmarshal shard: %v", err)
+	}
+	if shard.TotalMessages != 5 || shard.RatePerSecond != 2.5 || shard.DurationMS != 2000 || shard.PayloadSize != 32 || shard.SenderPick != "round_robin" || shard.MaxInFlight != 8 {
+		t.Fatalf("unexpected shard: %#v", shard)
 	}
 }
 

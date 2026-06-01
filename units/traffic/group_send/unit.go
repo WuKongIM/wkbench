@@ -38,6 +38,15 @@ type Spec struct {
 	AckTimeout contract.Duration `json:"ack_timeout" yaml:"ack_timeout"`
 }
 
+type planShard struct {
+	TotalMessages int64   `json:"total_messages"`
+	RatePerSecond float64 `json:"rate_per_second"`
+	DurationMS    int64   `json:"duration_ms"`
+	PayloadSize   int     `json:"payload_size"`
+	SenderPick    string  `json:"sender_pick,omitempty"`
+	MaxInFlight   int     `json:"max_in_flight,omitempty"`
+}
+
 // Definition implements contract.Unit.
 func (Unit) Definition() contract.Definition {
 	return contract.Definition{
@@ -85,7 +94,23 @@ func (Unit) Validate(ctx context.Context, env contract.ValidateEnv) error {
 
 // Plan implements contract.Unit.
 func (Unit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
-	return contract.Plan{UnitName: env.UnitName()}, nil
+	spec, err := decodeSpec(env)
+	if err != nil {
+		return contract.Plan{}, err
+	}
+	return contract.Plan{
+		UnitName: env.UnitName(),
+		Shards: []any{
+			planShard{
+				TotalMessages: totalMessages(spec.Rate, env.RunDuration()),
+				RatePerSecond: spec.Rate.PerSecond,
+				DurationMS:    env.RunDuration().Milliseconds(),
+				PayloadSize:   spec.PayloadSize,
+				SenderPick:    spec.SenderPick,
+				MaxInFlight:   spec.MaxInFlight,
+			},
+		},
+	}, nil
 }
 
 // Run implements contract.Unit.
@@ -105,16 +130,13 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if channels.Count() <= 0 {
 		return fmt.Errorf("group_send: channels input is empty")
 	}
-	totalMessages := int64(math.Round(spec.Rate.PerSecond * env.RunDuration().Seconds()))
-	if totalMessages < 1 {
-		totalMessages = 1
-	}
+	messageCount := totalMessages(spec.Rate, env.RunDuration())
 	ackTimeout := spec.AckTimeout.Duration
 	if ackTimeout <= 0 {
 		ackTimeout = defaultAckTimeout
 	}
 	var summary trafficport.Summary
-	for idx := int64(0); idx < totalMessages; idx++ {
+	for idx := int64(0); idx < messageCount; idx++ {
 		env.EmitCounter("send_attempt_total", 1, nil)
 		ack, err := sendOne(ctx, env, spec, ackTimeout, channels, sender, idx)
 		if err != nil {
@@ -128,6 +150,14 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 		summary.LastMessageID = ack.MessageID
 	}
 	return env.SetOutput("summary", summary)
+}
+
+func totalMessages(rate contract.Rate, duration time.Duration) int64 {
+	total := int64(math.Round(rate.PerSecond * duration.Seconds()))
+	if total < 1 {
+		return 1
+	}
+	return total
 }
 
 func decodeSpec(env contract.ValidateEnv) (Spec, error) {

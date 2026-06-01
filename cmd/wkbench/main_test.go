@@ -169,6 +169,117 @@ units:
 	}
 }
 
+func TestPlanCommandPrintsScenarioPlan(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: cli-plan
+  duration: 1s
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: 2/s
+      payload_size: 16
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plan", "-scenario", scenarioPath}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"Run: cli-plan",
+		"Execution Order:",
+		"Plans:",
+		"traffic: traffic.group_send/v1",
+		"status: completed",
+		"shards: 1",
+		"Wiring:",
+		"traffic.channels <- groups.groups",
+		"traffic.sender <- sender.sender",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected plan output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestPlanCommandPrintsJSON(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: cli-plan-json
+  duration: 1s
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: 2/s
+      payload_size: 16
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plan", "-scenario", scenarioPath, "-format", "json"}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	var result kernel.PlanResult
+	if err := json.Unmarshal(stderr.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal plan result: %v\n%s", err, stderr.String())
+	}
+	if result.RunID != "cli-plan-json" || result.Status != kernel.StatusCompleted {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if strings.Join(result.Order, ",") != "groups,sender,traffic" {
+		t.Fatalf("unexpected order: %#v", result.Order)
+	}
+	if result.Units["traffic"].Kind != "traffic.group_send/v1" {
+		t.Fatalf("unexpected traffic unit: %#v", result.Units["traffic"])
+	}
+	if len(result.Units["traffic"].Plan.Shards) != 1 {
+		t.Fatalf("unexpected traffic plan: %#v", result.Units["traffic"].Plan)
+	}
+}
+
+func TestPlanCommandRejectsUnsupportedFormat(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: cli-plan-format
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plan", "-scenario", scenarioPath, "-format", "yaml"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "unsupported plan format") {
+		t.Fatalf("expected unsupported format error, got %q", stderr.String())
+	}
+}
+
 func TestNewUnitCommandScaffoldsUnit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "units", "custom", "echo")
 

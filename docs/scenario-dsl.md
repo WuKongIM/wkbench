@@ -51,6 +51,15 @@ GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send
 
 `explain` uses the same graph builder as `validate` and `run`, so auto-wired inputs and execution order match runtime behavior. It calls unit validation only; it does not plan, run, write reports, or contact target services.
 
+Materialize deterministic unit plans before a run:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/wukongim-group-send.yaml
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/wukongim-group-send.yaml -format json
+```
+
+`plan` uses the same graph builder as `explain`, then calls each unit's validation and `Plan` phase in execution order. It shows per-unit plan status and shard counts in text mode; JSON mode contains the full unit-owned `contract.Plan`, such as `traffic.group_send/v1` total message count and rate. It does not run units, publish outputs, write reports, or contact target services.
+
 ## `after`
 
 Use `after` for ordering dependencies that do not pass data.

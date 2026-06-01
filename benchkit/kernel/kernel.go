@@ -66,6 +66,32 @@ type UnitResult struct {
 	Cleanup []CleanupResult `json:"cleanup,omitempty"`
 }
 
+// PlanResult summarizes one non-executing scenario planning pass.
+type PlanResult struct {
+	// RunID is copied from the scenario.
+	RunID string `json:"run_id"`
+	// Status is the terminal planning status.
+	Status Status `json:"status"`
+	// Order is the deterministic unit execution order.
+	Order []string `json:"order"`
+	// Units contains per-unit planning results.
+	Units map[string]UnitPlanResult `json:"units"`
+	// Wiring lists resolved input bindings in execution order.
+	Wiring []ExplainBinding `json:"wiring,omitempty"`
+}
+
+// UnitPlanResult summarizes one unit planning result.
+type UnitPlanResult struct {
+	// Kind is the resolved unit kind.
+	Kind string `json:"kind"`
+	// Status is the unit planning status.
+	Status Status `json:"status"`
+	// Error records the terminal validation or planning error when present.
+	Error string `json:"error,omitempty"`
+	// Plan is the unit-owned deterministic execution plan.
+	Plan contract.Plan `json:"plan,omitempty"`
+}
+
 // OutputResult summarizes one produced output port.
 type OutputResult struct {
 	// Type is the versioned public port type.
@@ -183,21 +209,38 @@ func (e *Engine) Explain(ctx context.Context, scenario dsl.Scenario) (Explanatio
 			Outputs: explainPorts(node.def.Outputs),
 			After:   append([]string(nil), node.after...),
 		}
-		for _, input := range node.def.Inputs {
-			ref, ok := node.bindings[input.Name]
-			if !ok {
-				continue
-			}
-			explanation.Wiring = append(explanation.Wiring, ExplainBinding{
-				Unit:         name,
-				Input:        input.Name,
-				SourceUnit:   ref.unit,
-				SourceOutput: ref.port,
-				Type:         input.Type,
-			})
-		}
 	}
+	explanation.Wiring = graphWiring(graph)
 	return explanation, nil
+}
+
+// Plan validates and materializes deterministic unit plans without executing units.
+func (e *Engine) Plan(ctx context.Context, scenario dsl.Scenario) (PlanResult, error) {
+	result := PlanResult{RunID: scenario.Run.ID, Status: StatusCompleted, Units: make(map[string]UnitPlanResult, len(scenario.Units))}
+	graph, err := e.buildGraph(scenario)
+	if err != nil {
+		result.Status = StatusConfigFailed
+		return result, err
+	}
+	result.Order = append([]string(nil), graph.order...)
+	result.Wiring = graphWiring(graph)
+	for _, name := range graph.order {
+		node := graph.nodes[name]
+		base := newBaseEnv(scenario, name, node.dsl.Spec)
+		if err := node.unit.Validate(ctx, base); err != nil {
+			result.Status = StatusConfigFailed
+			result.Units[name] = UnitPlanResult{Kind: node.def.Kind, Status: StatusConfigFailed, Error: err.Error()}
+			return result, fmt.Errorf("unit %q validate: %w", name, err)
+		}
+		plan, err := node.unit.Plan(ctx, base)
+		if err != nil {
+			result.Status = StatusPlanFailed
+			result.Units[name] = UnitPlanResult{Kind: node.def.Kind, Status: StatusPlanFailed, Error: err.Error()}
+			return result, fmt.Errorf("unit %q plan: %w", name, err)
+		}
+		result.Units[name] = UnitPlanResult{Kind: node.def.Kind, Status: StatusCompleted, Plan: plan}
+	}
+	return result, nil
 }
 
 // Run validates, plans, and executes a scenario graph.
@@ -254,6 +297,27 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 	}
 	cleanup()
 	return result, nil
+}
+
+func graphWiring(graph *graph) []ExplainBinding {
+	var wiring []ExplainBinding
+	for _, name := range graph.order {
+		node := graph.nodes[name]
+		for _, input := range node.def.Inputs {
+			ref, ok := node.bindings[input.Name]
+			if !ok {
+				continue
+			}
+			wiring = append(wiring, ExplainBinding{
+				Unit:         name,
+				Input:        input.Name,
+				SourceUnit:   ref.unit,
+				SourceOutput: ref.port,
+				Type:         input.Type,
+			})
+		}
+	}
+	return wiring
 }
 
 func explainPorts(defs []contract.PortDef) []ExplainPort {

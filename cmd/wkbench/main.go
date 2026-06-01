@@ -37,7 +37,7 @@ func main() {
 
 func runWithStderr(args []string, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|explain|validate|run>")
+		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|explain|plan|validate|run>")
 		return exitConfig
 	}
 	reg := defaultRegistry()
@@ -48,6 +48,8 @@ func runWithStderr(args []string, stderr io.Writer) int {
 		return runNewUnit(args[1:], stderr)
 	case "explain":
 		return runExplain(reg, args[1:], stderr)
+	case "plan":
+		return runPlan(reg, args[1:], stderr)
 	case "validate":
 		return runValidate(reg, args[1:], stderr)
 	case "run":
@@ -140,6 +142,47 @@ func runExplain(reg *registry.Registry, args []string, stderr io.Writer) int {
 	return exitOK
 }
 
+func runPlan(reg *registry.Registry, args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var scenarioPath string
+	var format string
+	fs.StringVar(&scenarioPath, "scenario", "", "path to wkbench/v2 scenario yaml")
+	fs.StringVar(&format, "format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return exitConfig
+	}
+	if scenarioPath == "" {
+		fmt.Fprintln(stderr, "-scenario is required")
+		return exitConfig
+	}
+	if format != "text" && format != "json" {
+		fmt.Fprintf(stderr, "unsupported plan format %q\n", format)
+		return exitConfig
+	}
+	scenario, code := loadScenario(scenarioPath, stderr)
+	if code != exitOK {
+		return code
+	}
+	result, err := kernel.New(reg).Plan(context.Background(), scenario)
+	if err != nil {
+		fmt.Fprintf(stderr, "plan failed: %v\n", err)
+		return exitConfig
+	}
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "marshal plan failed: %v\n", err)
+			return exitInternal
+		}
+		fmt.Fprintln(stderr, string(data))
+	default:
+		writePlanText(stderr, result)
+	}
+	return exitOK
+}
+
 func runValidate(reg *registry.Registry, args []string, stderr io.Writer) int {
 	scenario, code := parseScenarioArg(args, stderr)
 	if code != exitOK {
@@ -227,12 +270,45 @@ func writeExplainText(w io.Writer, explanation kernel.Explanation) {
 		writeExplainPorts(w, "outputs", unit.Outputs)
 	}
 	fmt.Fprintln(w)
+	writeWiringText(w, explanation.Wiring)
+}
+
+func writePlanText(w io.Writer, result kernel.PlanResult) {
+	fmt.Fprintf(w, "Run: %s\n", result.RunID)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Execution Order:")
+	for i, name := range result.Order {
+		unit := result.Units[name]
+		if unit.Kind == "" {
+			fmt.Fprintf(w, "  %d. %s\n", i+1, name)
+			continue
+		}
+		fmt.Fprintf(w, "  %d. %s (%s)\n", i+1, name, unit.Kind)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Plans:")
+	for _, name := range result.Order {
+		unit := result.Units[name]
+		fmt.Fprintf(w, "  %s: %s\n", name, unit.Kind)
+		fmt.Fprintf(w, "    status: %s\n", unit.Status)
+		if unit.Error != "" {
+			fmt.Fprintf(w, "    error: %s\n", unit.Error)
+		}
+		if len(unit.Plan.Shards) > 0 {
+			fmt.Fprintf(w, "    shards: %d\n", len(unit.Plan.Shards))
+		}
+	}
+	fmt.Fprintln(w)
+	writeWiringText(w, result.Wiring)
+}
+
+func writeWiringText(w io.Writer, wiring []kernel.ExplainBinding) {
 	fmt.Fprintln(w, "Wiring:")
-	if len(explanation.Wiring) == 0 {
+	if len(wiring) == 0 {
 		fmt.Fprintln(w, "  (none)")
 		return
 	}
-	for _, binding := range explanation.Wiring {
+	for _, binding := range wiring {
 		fmt.Fprintf(w, "  %s.%s <- %s.%s (%s)\n",
 			binding.Unit,
 			binding.Input,

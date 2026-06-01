@@ -21,6 +21,15 @@ GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/group-send.yaml -fo
 
 `explain` validates specs and wiring, then prints the execution order and resolved input bindings. It does not run units, create reports, or touch target services.
 
+Plan deterministic unit work before running it:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/group-send.yaml
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/group-send.yaml -format json
+```
+
+`plan` validates the scenario and calls each unit's `Plan` phase, then prints per-unit plan status and shard counts. It does not run units, publish outputs, write reports, or touch target services.
+
 List built-in units:
 
 ```bash
@@ -63,6 +72,13 @@ Inspect the same scenario's graph without connecting:
 ```bash
 GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml
 GOWORK=off go run ./cmd/wkbench explain -scenario ./examples/wukongim-group-send.yaml -format json
+```
+
+Plan the same scenario without connecting:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/wukongim-group-send.yaml
+GOWORK=off go run ./cmd/wkbench plan -scenario ./examples/wukongim-group-send.yaml -format json
 ```
 
 Run the single-node WuKongIM smoke after starting a target with bench API enabled:

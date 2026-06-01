@@ -128,6 +128,91 @@ func TestEngineExplainValidatesWithoutPlanningOrRunning(t *testing.T) {
 	}
 }
 
+func TestEnginePlanShowsOrderUnitPlansAndWiring(t *testing.T) {
+	reg := registry.New()
+	var calls []string
+	reg.MustRegister(planningSourceUnit{calls: &calls})
+	reg.MustRegister(planningSinkUnit{calls: &calls})
+
+	result, err := kernel.New(reg).Plan(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "plan"},
+		Units: map[string]dsl.UnitNode{
+			"source": {Use: "test.planning_source"},
+			"sink":   {Use: "test.planning_sink"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan scenario: %v", err)
+	}
+	if result.RunID != "plan" || result.Status != kernel.StatusCompleted {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if fmt.Sprint(result.Order) != "[source sink]" {
+		t.Fatalf("unexpected order: %#v", result.Order)
+	}
+	if result.Units["source"].Kind != "test.planning_source/v1" {
+		t.Fatalf("unexpected source result: %#v", result.Units["source"])
+	}
+	if result.Units["source"].Plan.UnitName != "source" || len(result.Units["source"].Plan.Shards) != 1 {
+		t.Fatalf("unexpected source plan: %#v", result.Units["source"].Plan)
+	}
+	if len(result.Wiring) != 1 || result.Wiring[0].Unit != "sink" || result.Wiring[0].SourceUnit != "source" {
+		t.Fatalf("unexpected wiring: %#v", result.Wiring)
+	}
+	want := []string{"validate:source", "plan:source", "validate:sink", "plan:sink"}
+	if fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Fatalf("unexpected calls got %v want %v", calls, want)
+	}
+}
+
+func TestEnginePlanDoesNotRunUnits(t *testing.T) {
+	reg := registry.New()
+	var calls []string
+	reg.MustRegister(planningLifecycleUnit{calls: &calls})
+
+	result, err := kernel.New(reg).Plan(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "lifecycle"},
+		Units: map[string]dsl.UnitNode{
+			"probe": {Use: "test.planning_lifecycle"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("plan scenario: %v", err)
+	}
+	if result.Status != kernel.StatusCompleted {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	want := []string{"validate:probe", "plan"}
+	if fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Fatalf("unexpected lifecycle calls got %v want %v", calls, want)
+	}
+}
+
+func TestEnginePlanRecordsPlanFailure(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(failingPlanUnit{})
+
+	result, err := kernel.New(reg).Plan(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "plan-fail"},
+		Units: map[string]dsl.UnitNode{
+			"fail": {Use: "test.failing_plan"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected plan error")
+	}
+	if result.Status != kernel.StatusPlanFailed {
+		t.Fatalf("unexpected result status %s", result.Status)
+	}
+	unit := result.Units["fail"]
+	if unit.Status != kernel.StatusPlanFailed || unit.Error != "boom" {
+		t.Fatalf("unexpected failed unit: %#v", unit)
+	}
+}
+
 func TestEngineRecordsReportableOutputs(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(reportableSourceUnit{})
@@ -321,6 +406,108 @@ func (u sourceUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, erro
 func (u sourceUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	*u.calls = append(*u.calls, env.UnitName())
 	return env.SetOutput("value", "source-value")
+}
+
+type planningSourceUnit struct {
+	calls *[]string
+}
+
+func (u planningSourceUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.planning_source/v1",
+		Outputs: []contract.PortDef{
+			{Name: "value", Type: testValuePort},
+		},
+	}
+}
+
+func (u planningSourceUnit) Validate(_ context.Context, env contract.ValidateEnv) error {
+	*u.calls = append(*u.calls, "validate:"+env.UnitName())
+	return nil
+}
+
+func (u planningSourceUnit) Plan(_ context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	*u.calls = append(*u.calls, "plan:"+env.UnitName())
+	return contract.Plan{
+		UnitName: env.UnitName(),
+		Shards: []any{
+			map[string]any{"name": env.UnitName()},
+		},
+	}, nil
+}
+
+func (u planningSourceUnit) Run(context.Context, contract.RunEnv) error {
+	*u.calls = append(*u.calls, "run")
+	return fmt.Errorf("run must not execute during plan")
+}
+
+type planningSinkUnit struct {
+	calls *[]string
+}
+
+func (u planningSinkUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.planning_sink/v1",
+		Inputs: []contract.PortDef{
+			{Name: "input", Type: testValuePort},
+		},
+	}
+}
+
+func (u planningSinkUnit) Validate(_ context.Context, env contract.ValidateEnv) error {
+	*u.calls = append(*u.calls, "validate:"+env.UnitName())
+	return nil
+}
+
+func (u planningSinkUnit) Plan(_ context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	*u.calls = append(*u.calls, "plan:"+env.UnitName())
+	return contract.Plan{UnitName: env.UnitName()}, nil
+}
+
+func (u planningSinkUnit) Run(context.Context, contract.RunEnv) error {
+	*u.calls = append(*u.calls, "run")
+	return fmt.Errorf("run must not execute during plan")
+}
+
+type planningLifecycleUnit struct {
+	calls *[]string
+}
+
+func (planningLifecycleUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.planning_lifecycle/v1"}
+}
+
+func (u planningLifecycleUnit) Validate(_ context.Context, env contract.ValidateEnv) error {
+	*u.calls = append(*u.calls, "validate:"+env.UnitName())
+	return nil
+}
+
+func (u planningLifecycleUnit) Plan(_ context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	*u.calls = append(*u.calls, "plan")
+	return contract.Plan{UnitName: env.UnitName()}, nil
+}
+
+func (u planningLifecycleUnit) Run(context.Context, contract.RunEnv) error {
+	*u.calls = append(*u.calls, "run")
+	return fmt.Errorf("run must not execute during plan")
+}
+
+type failingPlanUnit struct{}
+
+func (failingPlanUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.failing_plan/v1"}
+}
+
+func (failingPlanUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (failingPlanUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, fmt.Errorf("boom")
+}
+
+func (failingPlanUnit) Run(context.Context, contract.RunEnv) error {
+	return nil
 }
 
 type reportableSourceUnit struct{}
