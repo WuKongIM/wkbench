@@ -1,0 +1,100 @@
+version: wkbench/v2
+
+run:
+  id: wukongim-send-rate-mixed
+  duration: 5s
+  report_dir: ./reports/wukongim-send-rate-mixed
+
+vars:
+  users: 20
+  groups: 2
+  members: 10
+  person_pairs: 5
+  group_rate: 2/s
+  person_rate: 5/s
+
+units:
+  target:
+    use: wukongim.target
+    spec:
+      api_addrs: ["http://127.0.0.1:5001"]
+      gateway_tcp_addrs: ["127.0.0.1:5100"]
+      bench_api_token: ""
+      operation_timeout: 5s
+
+  identities:
+    use: identity.pool
+    spec:
+      total: ${users}
+      uid_prefix: bench-u
+      device_prefix: bench-d
+      token_prefix: bench-token
+
+  tokens:
+    use: wukongim.prepare_tokens
+
+  groups:
+    use: wukongim.prepare_group_channels
+    spec:
+      profile: mixed
+      count: ${groups}
+      members_per_channel: ${members}
+      overlap: disallowed
+      batch_size: 1000
+
+  pairs:
+    use: identity.person_pairs
+    spec:
+      count: ${person_pairs}
+      mode: ring
+      bidirectional: true
+
+  sessions:
+    use: wkproto.session_pool
+    after: [tokens, groups]
+    spec:
+      connect_rate: 100/s
+
+  group_traffic:
+    use: traffic.send
+    inputs:
+      targets: groups.targets
+      sender: sessions.message_sender
+    spec:
+      rate: ${group_rate}
+      payload_size: 128
+      sender_pick: round_robin
+      max_in_flight: 8
+      ack_timeout: 5s
+
+  person_traffic:
+    use: traffic.send
+    inputs:
+      targets: pairs.targets
+      sender: sessions.message_sender
+    spec:
+      rate: ${person_rate}
+      payload_size: 128
+      sender_pick: round_robin
+      max_in_flight: 8
+      ack_timeout: 5s
+
+  group_limits:
+    use: report.assert
+    inputs:
+      summary: group_traffic.summary
+    spec:
+      rules:
+        - metric: sendack_error_rate
+          op: eq
+          value: 0
+
+  person_limits:
+    use: report.assert
+    inputs:
+      summary: person_traffic.summary
+    spec:
+      rules:
+        - metric: sendack_error_rate
+          op: eq
+          value: 0

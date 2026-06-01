@@ -69,7 +69,10 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
+		"core.fake_message_sender/v1",
 		"identity.pool/v1",
+		"identity.person_pairs/v1",
+		"traffic.send/v1",
 		"wukongim.target/v1",
 		"wukongim.prepare_tokens/v1",
 		"wukongim.prepare_group_channels/v1",
@@ -78,6 +81,43 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected list-units to include %s, got:\n%s", want, out)
 		}
+	}
+}
+
+func TestValidateCommandAcceptsMixedSendRateScenario(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: mixed-send-rate
+  duration: 1ms
+units:
+  identities:
+    use: identity.pool
+    spec:
+      total: 4
+      uid_prefix: u
+      device_prefix: d
+  pairs:
+    use: identity.person_pairs
+    spec:
+      count: 2
+      mode: ring
+  sender:
+    use: core.fake_message_sender
+  person_traffic:
+    use: traffic.send
+    inputs:
+      targets: pairs.targets
+      sender: sender.sender
+    spec:
+      rate: 1000/s
+      payload_size: 8
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"validate", "-scenario", scenarioPath}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
 	}
 }
 

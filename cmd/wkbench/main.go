@@ -14,10 +14,13 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/report"
 	"github.com/WuKongIM/wkbench/benchkit/scaffold"
 	fakegroupsender "github.com/WuKongIM/wkbench/units/core/fake_group_sender"
+	fakemessagesender "github.com/WuKongIM/wkbench/units/core/fake_message_sender"
 	staticgroups "github.com/WuKongIM/wkbench/units/core/static_groups"
+	personpairs "github.com/WuKongIM/wkbench/units/identity/person_pairs"
 	identitypool "github.com/WuKongIM/wkbench/units/identity/pool"
 	assertunit "github.com/WuKongIM/wkbench/units/report/assert"
 	groupsend "github.com/WuKongIM/wkbench/units/traffic/group_send"
+	sendtraffic "github.com/WuKongIM/wkbench/units/traffic/send"
 	sessionpool "github.com/WuKongIM/wkbench/units/wkproto/session_pool"
 	preparegroups "github.com/WuKongIM/wkbench/units/wukongim/prepare_group_channels"
 	preparetokens "github.com/WuKongIM/wkbench/units/wukongim/prepare_tokens"
@@ -64,12 +67,15 @@ func defaultRegistry() *registry.Registry {
 	reg := registry.New()
 	staticgroups.Register(reg)
 	fakegroupsender.Register(reg)
+	fakemessagesender.Register(reg)
 	identitypool.Register(reg)
+	personpairs.Register(reg)
 	wukongtarget.Register(reg)
 	preparetokens.Register(reg)
 	preparegroups.Register(reg)
 	sessionpool.Register(reg)
 	reg.MustRegister(groupsend.Unit{})
+	sendtraffic.Register(reg)
 	assertunit.Register(reg)
 	return reg
 }
