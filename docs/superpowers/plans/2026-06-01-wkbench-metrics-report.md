@@ -493,7 +493,7 @@ Expected: PASS.
 - Modify: `units/traffic/group_send/unit.go`
 - Modify: `units/traffic/group_send/unit_test.go`
 
-- [ ] **Step 1: Write failing metric definition test**
+- [x] **Step 1: Write failing metric definition test**
 
 Add the following test to `units/traffic/group_send/unit_test.go` after `TestGroupSendUsesPortsAndEmitsSummary`:
 
@@ -512,7 +512,7 @@ func TestGroupSendDeclaresDurationMetric(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run traffic unit tests to verify RED**
+- [x] **Step 2: Run traffic unit tests to verify RED**
 
 Run:
 
@@ -522,7 +522,7 @@ GOWORK=off go test ./units/traffic/group_send
 
 Expected: FAIL because `sendack_latency` is currently declared as `histogram`.
 
-- [ ] **Step 3: Change latency metric type**
+- [x] **Step 3: Change latency metric type**
 
 In `units/traffic/group_send/unit.go`, change the metric definition:
 
@@ -530,7 +530,7 @@ In `units/traffic/group_send/unit.go`, change the metric definition:
 {Name: "sendack_latency", Type: "duration"},
 ```
 
-- [ ] **Step 4: Run traffic unit tests to verify GREEN**
+- [x] **Step 4: Run traffic unit tests to verify GREEN**
 
 Run:
 
