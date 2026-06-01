@@ -116,6 +116,12 @@ type ReportableOutput interface {
 	ReportOutput() any
 }
 
+// CloseableOutput is implemented by output values that own runtime resources.
+type CloseableOutput interface {
+	// Close releases runtime resources owned by the output value.
+	Close() error
+}
+
 // Plan is a unit-owned deterministic execution plan.
 type Plan struct {
 	// UnitName is the scenario-local unit name.

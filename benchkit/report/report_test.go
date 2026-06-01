@@ -63,3 +63,31 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteDirIncludesCleanupErrors(t *testing.T) {
+	dir := t.TempDir()
+	result := kernel.Result{
+		RunID:  "demo",
+		Status: kernel.StatusCompleted,
+		Units: map[string]kernel.UnitResult{
+			"sessions": {
+				Kind:   "wkproto.session_pool/v1",
+				Status: kernel.StatusCompleted,
+				Cleanup: []kernel.CleanupResult{
+					{Output: "group_sender", Error: "close failed"},
+				},
+			},
+		},
+	}
+	if err := report.WriteDir(dir, result); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "cleanup `group_sender`: close failed") {
+		t.Fatalf("summary.md missing cleanup error:\n%s", text)
+	}
+}

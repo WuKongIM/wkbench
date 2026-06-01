@@ -52,6 +52,9 @@ func summaryMarkdown(result kernel.Result) string {
 		for _, outputName := range outputNames {
 			out += formatOutput(outputName, unit.Outputs[outputName])
 		}
+		for _, cleanup := range unit.Cleanup {
+			out += formatCleanup(cleanup)
+		}
 	}
 	return out
 }
@@ -75,4 +78,11 @@ func formatOutputValue(value any) string {
 		}
 		return fmt.Sprintf("value: `%s`", data)
 	}
+}
+
+func formatCleanup(cleanup kernel.CleanupResult) string {
+	if cleanup.Error == "" {
+		return fmt.Sprintf("  - cleanup `%s`: ok\n", cleanup.Output)
+	}
+	return fmt.Sprintf("  - cleanup `%s`: %s\n", cleanup.Output, cleanup.Error)
 }

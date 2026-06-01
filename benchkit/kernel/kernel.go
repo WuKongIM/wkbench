@@ -59,6 +59,8 @@ type UnitResult struct {
 	Error string `json:"error,omitempty"`
 	// Outputs lists output ports produced by the unit.
 	Outputs map[string]OutputResult `json:"outputs,omitempty"`
+	// Cleanup lists non-fatal cleanup results for closeable outputs.
+	Cleanup []CleanupResult `json:"cleanup,omitempty"`
 }
 
 // OutputResult summarizes one produced output port.
@@ -67,6 +69,14 @@ type OutputResult struct {
 	Type contract.PortType `json:"type"`
 	// Value is present only when the output opted into reports.
 	Value any `json:"value,omitempty"`
+}
+
+// CleanupResult summarizes cleanup for one produced output.
+type CleanupResult struct {
+	// Output is the unit-local output port name.
+	Output string `json:"output"`
+	// Error records a non-fatal cleanup error when present.
+	Error string `json:"error,omitempty"`
 }
 
 // Validate checks graph wiring and unit specs without executing units.
@@ -93,17 +103,22 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 		return result, err
 	}
 	outputs := newOutputStore()
+	cleanup := func() {
+		outputs.cleanup(graph.order, result.Units)
+	}
 	for _, name := range graph.order {
 		node := graph.nodes[name]
 		base := newBaseEnv(scenario, name, node.dsl.Spec)
 		if err := node.unit.Validate(ctx, base); err != nil {
 			result.Status = StatusConfigFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusConfigFailed, Error: err.Error()}
+			cleanup()
 			return result, fmt.Errorf("unit %q validate: %w", name, err)
 		}
 		if _, err := node.unit.Plan(ctx, base); err != nil {
 			result.Status = StatusPlanFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusPlanFailed, Error: err.Error()}
+			cleanup()
 			return result, fmt.Errorf("unit %q plan: %w", name, err)
 		}
 		env := &runEnv{
@@ -116,10 +131,12 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 		if err := node.unit.Run(ctx, env); err != nil {
 			result.Status = StatusWorkerFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusWorkerFailed, Error: err.Error()}
+			cleanup()
 			return result, fmt.Errorf("unit %q run: %w", name, err)
 		}
 		result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusCompleted, Outputs: outputs.resultsForUnit(name, node.def.Outputs)}
 	}
+	cleanup()
 	return result, nil
 }
 
@@ -444,4 +461,47 @@ func (s *outputStore) resultsForUnit(unit string, defs []contract.PortDef) map[s
 		return nil
 	}
 	return results
+}
+
+func (s *outputStore) cleanup(order []string, results map[string]UnitResult) {
+	targets := s.cleanupTargets(order)
+	for _, target := range targets {
+		if err := target.closeable.Close(); err != nil {
+			unitResult := results[target.unit]
+			unitResult.Cleanup = append(unitResult.Cleanup, CleanupResult{Output: target.port, Error: err.Error()})
+			results[target.unit] = unitResult
+		}
+	}
+}
+
+type cleanupTarget struct {
+	unit      string
+	port      string
+	closeable contract.CloseableOutput
+}
+
+func (s *outputStore) cleanupTargets(order []string) []cleanupTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var targets []cleanupTarget
+	for i := len(order) - 1; i >= 0; i-- {
+		unit := order[i]
+		ports := s.values[unit]
+		if len(ports) == 0 {
+			continue
+		}
+		portNames := make([]string, 0, len(ports))
+		for port := range ports {
+			portNames = append(portNames, port)
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(portNames)))
+		for _, port := range portNames {
+			closeable, ok := ports[port].(contract.CloseableOutput)
+			if !ok {
+				continue
+			}
+			targets = append(targets, cleanupTarget{unit: unit, port: port, closeable: closeable})
+		}
+	}
+	return targets
 }

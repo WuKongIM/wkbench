@@ -129,6 +129,33 @@ If the unit produces a reportable output, return a small JSON-friendly value
 that implements `contract.ReportableOutput`. Do not expose secrets, tokens, or
 live client handles through report values.
 
+## Runtime Resource Cleanup
+
+If an output owns runtime resources, such as sockets, files, goroutines, or
+session pools, make the output value implement `contract.CloseableOutput`:
+
+```go
+type Pool struct {
+	clients map[string]Client
+}
+
+func (p *Pool) Close() error {
+	var first error
+	for _, client := range p.clients {
+		if err := client.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+```
+
+The kernel closes closeable outputs after scenario execution in reverse unit
+execution order. It also closes resources already produced when a later unit
+fails. Cleanup errors are recorded under the producing unit in `report.json`
+and `summary.md`, but they do not turn an otherwise successful run into a
+failed run.
+
 ## Register A Unit
 
 Register units only in a distribution binary or test registry:

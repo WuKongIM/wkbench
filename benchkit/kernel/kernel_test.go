@@ -2,6 +2,7 @@ package kernel_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
@@ -81,6 +82,82 @@ func TestEngineRecordsReportableOutputs(t *testing.T) {
 	}
 }
 
+func TestEngineClosesOutputsInReverseExecutionOrder(t *testing.T) {
+	reg := registry.New()
+	var events []string
+	reg.MustRegister(closeableUnit{kind: "test.closeable_a/v1", outputName: "value", events: &events})
+	reg.MustRegister(closeableUnit{kind: "test.closeable_b/v1", outputName: "value", events: &events})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "cleanup"},
+		Units: map[string]dsl.UnitNode{
+			"a": {Use: "test.closeable_a"},
+			"b": {Use: "test.closeable_b", After: []string{"a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	if result.Status != kernel.StatusCompleted {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	want := []string{"run:a", "run:b", "close:b.value", "close:a.value"}
+	if fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("unexpected events got %v want %v", events, want)
+	}
+}
+
+func TestEngineRecordsCleanupErrorsWithoutFailingRun(t *testing.T) {
+	reg := registry.New()
+	var events []string
+	reg.MustRegister(closeableUnit{kind: "test.closeable/v1", outputName: "value", events: &events, closeErr: fmt.Errorf("close failed")})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "cleanup-error"},
+		Units: map[string]dsl.UnitNode{
+			"resource": {Use: "test.closeable"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	if result.Status != kernel.StatusCompleted {
+		t.Fatalf("cleanup errors must not change status, got %s", result.Status)
+	}
+	cleanup := result.Units["resource"].Cleanup
+	if len(cleanup) != 1 || cleanup[0].Output != "value" || cleanup[0].Error != "close failed" {
+		t.Fatalf("unexpected cleanup results: %#v", cleanup)
+	}
+}
+
+func TestEngineClosesExecutedOutputsWhenLaterUnitFails(t *testing.T) {
+	reg := registry.New()
+	var events []string
+	reg.MustRegister(closeableUnit{kind: "test.closeable/v1", outputName: "value", events: &events})
+	reg.MustRegister(failingRunUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "cleanup-on-fail"},
+		Units: map[string]dsl.UnitNode{
+			"resource": {Use: "test.closeable"},
+			"fail":     {Use: "test.failing_run", After: []string{"resource"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected run error")
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	want := []string{"run:resource", "close:resource.value"}
+	if fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("unexpected events got %v want %v", events, want)
+	}
+}
+
 const testValuePort = contract.PortType("port.test.value/v1")
 
 type sourceUnit struct {
@@ -140,6 +217,64 @@ func (reportableSourceUnit) Run(ctx context.Context, env contract.RunEnv) error 
 type reportableValue string
 
 func (v reportableValue) ReportOutput() any { return string(v) }
+
+type closeableUnit struct {
+	kind       string
+	outputName string
+	events     *[]string
+	closeErr   error
+}
+
+func (u closeableUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: u.kind,
+		Outputs: []contract.PortDef{
+			{Name: u.outputName, Type: testValuePort},
+		},
+	}
+}
+
+func (closeableUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (closeableUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (u closeableUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	*u.events = append(*u.events, "run:"+env.UnitName())
+	return env.SetOutput(u.outputName, closeableValue{label: env.UnitName() + "." + u.outputName, events: u.events, err: u.closeErr})
+}
+
+type closeableValue struct {
+	label  string
+	events *[]string
+	err    error
+}
+
+func (v closeableValue) Close() error {
+	*v.events = append(*v.events, "close:"+v.label)
+	return v.err
+}
+
+type failingRunUnit struct{}
+
+func (failingRunUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.failing_run/v1"}
+}
+
+func (failingRunUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (failingRunUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (failingRunUnit) Run(context.Context, contract.RunEnv) error {
+	return fmt.Errorf("boom")
+}
 
 type sinkUnit struct {
 	calls *[]string
