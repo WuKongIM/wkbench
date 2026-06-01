@@ -589,7 +589,7 @@ Expected: PASS.
 **Files:**
 - Modify only files already listed in Tasks 1-4.
 
-- [ ] **Step 1: Format changed Go files**
+- [x] **Step 1: Format changed Go files**
 
 Run:
 
@@ -597,7 +597,7 @@ Run:
 gofmt -w benchkit/kernel/kernel.go benchkit/kernel/kernel_test.go benchkit/report/report.go benchkit/report/report_test.go units/traffic/group_send/unit.go units/traffic/group_send/unit_test.go
 ```
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 Run:
 
@@ -607,7 +607,7 @@ GOWORK=off go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 3: Run dry scenario report smoke**
+- [x] **Step 3: Run dry scenario report smoke**
 
 Run:
 
@@ -621,7 +621,7 @@ rg -n "send_attempt_total|sendack_success_total|sendack_error_total|sendack_late
 
 Expected: all commands exit 0, and `rg` prints all four metric names at least once.
 
-- [ ] **Step 4: Inspect git diff**
+- [x] **Step 4: Inspect git diff**
 
 Run:
 
@@ -632,7 +632,7 @@ git status -sb
 
 Expected: `git diff --check` exits 0, and status shows only the planned files modified or added.
 
-- [ ] **Step 5: Commit implementation**
+- [x] **Step 5: Commit implementation**
 
 Run:
 
