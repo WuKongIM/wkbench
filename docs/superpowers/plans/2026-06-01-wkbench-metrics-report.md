@@ -545,7 +545,7 @@ Expected: PASS.
 **Files:**
 - Modify: `docs/unit-standard.md`
 
-- [ ] **Step 1: Update unit standard documentation**
+- [x] **Step 1: Update unit standard documentation**
 
 In `docs/unit-standard.md`, after the reportable output section and before `Runtime Resource Cleanup`, add:
 
@@ -574,7 +574,7 @@ delta sum. Durations record count, sum, min, and max in seconds. Metrics are
 written to `report.json` and rendered in `summary.md`.
 ````
 
-- [ ] **Step 2: Run full tests after docs**
+- [x] **Step 2: Run full tests after docs**
 
 Run:
 
