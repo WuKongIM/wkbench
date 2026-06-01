@@ -138,8 +138,8 @@ env.EmitCounter("send_attempt_total", 1, nil)
 env.ObserveDuration("sendack_latency", latency, nil)
 ```
 
-Declare metrics in `Definition` so `explain`, reports, and future planners can
-describe the unit contract:
+Declare metrics in `Definition` so reports and future planners can describe the
+unit contract:
 
 ```go
 Metrics: []contract.MetricDef{
@@ -151,6 +151,8 @@ Metrics: []contract.MetricDef{
 The kernel aggregates metrics per unit. Counters record emission count and
 delta sum. Durations record count, sum, min, and max in seconds. Metrics are
 written to `report.json` and rendered in `summary.md`.
+When labels are provided, each distinct label set is aggregated separately and
+preserved in report.json.
 
 ## Runtime Resource Cleanup
 
