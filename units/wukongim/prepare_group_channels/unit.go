@@ -55,6 +55,7 @@ func (Unit) Definition() contract.Definition {
 		},
 		Outputs: []contract.PortDef{
 			{Name: "channels", Type: channelport.GroupSetV1},
+			{Name: "targets", Type: channelport.SendTargetSetV1},
 		},
 	}
 }
@@ -122,7 +123,10 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	}); err != nil {
 		return err
 	}
-	return env.SetOutput("channels", groups)
+	if err := env.SetOutput("channels", groups); err != nil {
+		return err
+	}
+	return env.SetOutput("targets", targetsFromGroups(groups))
 }
 
 func decodeSpec(env contract.ValidateEnv) (Spec, error) {
@@ -169,6 +173,18 @@ func buildGroups(runID string, spec Spec, pool identityport.Pool) (GroupSet, err
 	return GroupSet{Items: groups}, nil
 }
 
+func targetsFromGroups(groups GroupSet) TargetSet {
+	targets := make([]channelport.SendTarget, 0, len(groups.Items))
+	for _, group := range groups.Items {
+		targets = append(targets, channelport.SendTarget{
+			ChannelID:   group.ChannelID,
+			ChannelType: groupChannelType,
+			SenderUIDs:  append([]string(nil), group.Members...),
+		})
+	}
+	return TargetSet{Items: targets}
+}
+
 // GroupSet is a JSON-friendly prepared group set.
 type GroupSet struct {
 	// Items contains prepared group channels.
@@ -180,3 +196,15 @@ func (s GroupSet) Count() int { return len(s.Items) }
 
 // At implements channel.GroupSet.
 func (s GroupSet) At(index int) channelport.GroupChannel { return s.Items[index] }
+
+// TargetSet is a JSON-friendly prepared send target set.
+type TargetSet struct {
+	// Items contains prepared send targets.
+	Items []channelport.SendTarget `json:"items"`
+}
+
+// Count implements channel.SendTargetSet.
+func (s TargetSet) Count() int { return len(s.Items) }
+
+// At implements channel.SendTargetSet.
+func (s TargetSet) At(index int) channelport.SendTarget { return s.Items[index] }

@@ -73,6 +73,17 @@ func TestPrepareGroupChannelsPostsChannelsSubscribersAndOutputsGroupSet(t *testi
 	if groups.Count() != 2 || groups.At(1).Members[1] != "u4" {
 		t.Fatalf("unexpected groups output: count=%d second=%#v", groups.Count(), groups.At(1))
 	}
+	targets, err := contract.Output[channelport.SendTargetSet](env, "targets")
+	if err != nil {
+		t.Fatalf("targets output: %v", err)
+	}
+	if targets.Count() != 2 {
+		t.Fatalf("unexpected target count: %d", targets.Count())
+	}
+	firstTarget := targets.At(0)
+	if firstTarget.ChannelID != "run-1-small-0" || firstTarget.ChannelType != 2 || len(firstTarget.SenderUIDs) != 2 || firstTarget.SenderUIDs[0] != "u1" {
+		t.Fatalf("unexpected first target: %#v", firstTarget)
+	}
 }
 
 type identityPool struct {
