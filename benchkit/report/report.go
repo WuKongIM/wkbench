@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
+	trafficport "github.com/WuKongIM/wkbench/benchkit/ports/traffic"
 )
 
 // WriteDir writes a compact JSON and Markdown report directory.
@@ -43,6 +44,35 @@ func summaryMarkdown(result kernel.Result) string {
 	for _, name := range unitNames {
 		unit := result.Units[name]
 		out += fmt.Sprintf("- `%s` `%s` `%s`\n", name, unit.Kind, unit.Status)
+		outputNames := make([]string, 0, len(unit.Outputs))
+		for outputName := range unit.Outputs {
+			outputNames = append(outputNames, outputName)
+		}
+		sort.Strings(outputNames)
+		for _, outputName := range outputNames {
+			out += formatOutput(outputName, unit.Outputs[outputName])
+		}
 	}
 	return out
+}
+
+func formatOutput(name string, output kernel.OutputResult) string {
+	prefix := fmt.Sprintf("  - output `%s` `%s`", name, output.Type)
+	if output.Value == nil {
+		return prefix + "\n"
+	}
+	return prefix + ": " + formatOutputValue(output.Value) + "\n"
+}
+
+func formatOutputValue(value any) string {
+	switch v := value.(type) {
+	case trafficport.Summary:
+		return fmt.Sprintf("sendack_ok: `%d`, sendack_errors: `%d`, sendack_error_rate: `%.4f`, last_message_id: `%d`", v.SendackOK, v.SendackErrors, v.SendackErrorRate(), v.LastMessageID)
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprintf("value: `%v`", value)
+		}
+		return fmt.Sprintf("value: `%s`", data)
+	}
 }

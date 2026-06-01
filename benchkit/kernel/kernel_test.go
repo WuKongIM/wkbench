@@ -58,6 +58,29 @@ func TestEngineRejectsAmbiguousAutoWire(t *testing.T) {
 	}
 }
 
+func TestEngineRecordsReportableOutputs(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(reportableSourceUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "reportable"},
+		Units: map[string]dsl.UnitNode{
+			"source": {Use: "test.reportable_source"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	output := result.Units["source"].Outputs["value"]
+	if output.Type != testValuePort {
+		t.Fatalf("unexpected output type %s", output.Type)
+	}
+	if output.Value != "visible-value" {
+		t.Fatalf("unexpected output value %#v", output.Value)
+	}
+}
+
 const testValuePort = contract.PortType("port.test.value/v1")
 
 type sourceUnit struct {
@@ -90,6 +113,33 @@ func (u sourceUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	*u.calls = append(*u.calls, env.UnitName())
 	return env.SetOutput("value", "source-value")
 }
+
+type reportableSourceUnit struct{}
+
+func (reportableSourceUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.reportable_source/v1",
+		Outputs: []contract.PortDef{
+			{Name: "value", Type: testValuePort},
+		},
+	}
+}
+
+func (reportableSourceUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (reportableSourceUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (reportableSourceUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	return env.SetOutput("value", reportableValue("visible-value"))
+}
+
+type reportableValue string
+
+func (v reportableValue) ReportOutput() any { return string(v) }
 
 type sinkUnit struct {
 	calls *[]string

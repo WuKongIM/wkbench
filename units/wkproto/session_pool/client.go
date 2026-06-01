@@ -128,7 +128,7 @@ func (c *wkClient) Connect(ctx context.Context, uid, deviceID string) error {
 }
 
 func (c *wkClient) SendGroupAndWaitAck(ctx context.Context, req wkprotoport.GroupSendRequest) (wkprotoport.SendAck, error) {
-	ctx, cancel := c.withDefaultTimeout(ctx)
+	ctx, cancel := c.withRequestTimeout(ctx, req.Timeout)
 	defer cancel()
 	c.clientSeq++
 	send := &frame.SendPacket{
@@ -150,7 +150,7 @@ func (c *wkClient) SendGroupAndWaitAck(ctx context.Context, req wkprotoport.Grou
 		if !ok {
 			continue
 		}
-		if ack.ClientMsgNo != req.ClientMsgNo && ack.ClientSeq != send.ClientSeq {
+		if !sendackMatchesRequest(ack, req.ClientMsgNo, send.ClientSeq) {
 			continue
 		}
 		if ack.ReasonCode != frame.ReasonSuccess {
@@ -290,6 +290,26 @@ func (c *wkClient) withDefaultTimeout(ctx context.Context) (context.Context, con
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, c.operationTimeout)
+}
+
+func (c *wkClient) withRequestTimeout(ctx context.Context, requested time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	if requested > 0 {
+		return context.WithTimeout(ctx, requested)
+	}
+	return c.withDefaultTimeout(ctx)
+}
+
+func sendackMatchesRequest(ack *frame.SendackPacket, clientMsgNo string, clientSeq uint64) bool {
+	if ack == nil {
+		return false
+	}
+	if clientMsgNo != "" {
+		return ack.ClientMsgNo == clientMsgNo
+	}
+	return ack.ClientSeq == clientSeq
 }
 
 func withDeadline(ctx context.Context, setDeadline func(time.Time) error, run func() error) error {

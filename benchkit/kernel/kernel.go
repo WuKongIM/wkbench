@@ -57,8 +57,16 @@ type UnitResult struct {
 	Status Status `json:"status"`
 	// Error records the terminal error when present.
 	Error string `json:"error,omitempty"`
-	// Outputs lists output port names produced by the unit.
-	Outputs []string `json:"outputs,omitempty"`
+	// Outputs lists output ports produced by the unit.
+	Outputs map[string]OutputResult `json:"outputs,omitempty"`
+}
+
+// OutputResult summarizes one produced output port.
+type OutputResult struct {
+	// Type is the versioned public port type.
+	Type contract.PortType `json:"type"`
+	// Value is present only when the output opted into reports.
+	Value any `json:"value,omitempty"`
 }
 
 // Validate checks graph wiring and unit specs without executing units.
@@ -110,7 +118,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusWorkerFailed, Error: err.Error()}
 			return result, fmt.Errorf("unit %q run: %w", name, err)
 		}
-		result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusCompleted, Outputs: outputs.namesForUnit(name)}
+		result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusCompleted, Outputs: outputs.resultsForUnit(name, node.def.Outputs)}
 	}
 	return result, nil
 }
@@ -409,14 +417,31 @@ func (s *outputStore) get(unit, port string) (any, error) {
 	return value, nil
 }
 
-func (s *outputStore) namesForUnit(unit string) []string {
+func (s *outputStore) resultsForUnit(unit string, defs []contract.PortDef) map[string]OutputResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ports := s.values[unit]
-	names := make([]string, 0, len(ports))
-	for name := range ports {
-		names = append(names, name)
+	if len(ports) == 0 {
+		return nil
 	}
-	sort.Strings(names)
-	return names
+	byName := make(map[string]contract.PortDef, len(defs))
+	for _, def := range defs {
+		byName[def.Name] = def
+	}
+	results := make(map[string]OutputResult, len(ports))
+	for name, value := range ports {
+		def, ok := byName[name]
+		if !ok {
+			continue
+		}
+		output := OutputResult{Type: def.Type}
+		if reportable, ok := value.(contract.ReportableOutput); ok {
+			output.Value = reportable.ReportOutput()
+		}
+		results[name] = output
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	return results
 }

@@ -110,6 +110,12 @@ type RunEnv interface {
 	Payload(size int) []byte
 }
 
+// ReportableOutput allows output values to opt into JSON/Markdown reports.
+type ReportableOutput interface {
+	// ReportOutput returns a JSON-friendly, non-sensitive summary value.
+	ReportOutput() any
+}
+
 // Plan is a unit-owned deterministic execution plan.
 type Plan struct {
 	// UnitName is the scenario-local unit name.

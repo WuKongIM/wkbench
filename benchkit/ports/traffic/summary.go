@@ -24,3 +24,8 @@ func (s Summary) SendackErrorRate() float64 {
 	}
 	return float64(s.SendackErrors) / float64(total)
 }
+
+// ReportOutput implements contract.ReportableOutput.
+func (s Summary) ReportOutput() any {
+	return s
+}

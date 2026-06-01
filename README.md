@@ -42,6 +42,18 @@ Validate the real WuKongIM example without connecting:
 GOWORK=off go run ./cmd/wkbench validate -scenario ./examples/wukongim-group-send.yaml
 ```
 
+Run the single-node WuKongIM smoke after starting a target with bench API enabled:
+
+```bash
+./scripts/smoke-wukongim-single-node.sh
+```
+
+Override the scenario path when needed:
+
+```bash
+WKBENCH_SCENARIO=/path/to/scenario.yaml ./scripts/smoke-wukongim-single-node.sh
+```
+
 ## Architecture Notes
 
 - `benchkit/contract` defines the stable Unit API.
