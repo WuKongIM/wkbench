@@ -271,7 +271,9 @@ func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	if duration.Type != "duration" || duration.Count != 2 ||
 		math.Abs(duration.Sum-0.003) > 0.0000001 ||
 		math.Abs(duration.Min-0.001) > 0.0000001 ||
-		math.Abs(duration.Max-0.002) > 0.0000001 {
+		math.Abs(duration.Max-0.002) > 0.0000001 ||
+		math.Abs(duration.P95-0.002) > 0.0000001 ||
+		math.Abs(duration.P99-0.002) > 0.0000001 {
 		t.Fatalf("unexpected duration metric: %#v", duration)
 	}
 }

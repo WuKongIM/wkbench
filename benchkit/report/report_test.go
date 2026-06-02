@@ -85,6 +85,8 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 						Sum:   0.003,
 						Min:   0.001,
 						Max:   0.002,
+						P95:   0.002,
+						P99:   0.002,
 					},
 				},
 			},
@@ -98,7 +100,7 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	jsonText := string(jsonData)
-	for _, want := range []string{`"metrics"`, `"send_attempt_total"`, `"sendack_latency"`} {
+	for _, want := range []string{`"metrics"`, `"send_attempt_total"`, `"sendack_latency"`, `"p95"`, `"p99"`} {
 		if !strings.Contains(jsonText, want) {
 			t.Fatalf("report.json missing %q:\n%s", want, jsonText)
 		}
@@ -110,7 +112,7 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 	markdown := string(markdownData)
 	for _, want := range []string{
 		"metric `send_attempt_total` `counter`: count `2`, sum `3`",
-		"metric `sendack_latency` `duration`: count `2`, avg `1.50ms`, min `1.00ms`, max `2.00ms`",
+		"metric `sendack_latency` `duration`: count `2`, avg `1.50ms`, p95 `2.00ms`, p99 `2.00ms`, min `1.00ms`, max `2.00ms`",
 	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("summary.md missing %q:\n%s", want, markdown)

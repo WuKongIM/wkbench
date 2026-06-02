@@ -351,6 +351,11 @@ func TestSendRateSweepDryRunMixedHasAggregateAndNoZeroRates(t *testing.T) {
 	if !strings.Contains(string(summary), "| `mixed` | `1` | `total` | `1` | `not-run`") {
 		t.Fatalf("mixed summary should include aggregate total row:\n%s", summary)
 	}
+	for _, want := range []string{"latency_p95", "latency_p99"} {
+		if !strings.Contains(string(summary), want) {
+			t.Fatalf("mixed summary should include %q column:\n%s", want, summary)
+		}
+	}
 	for _, scenario := range []string{
 		filepath.Join(outDir, "steps", "0001-1qps", "person", "scenario.yaml"),
 		filepath.Join(outDir, "steps", "0001-1qps", "group", "scenario.yaml"),
@@ -383,8 +388,16 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 		`.units[$unit].metrics.sendack_latency.sum`,
 		`.units[$unit].metrics.sendack_latency.min`,
 		`.units[$unit].metrics.sendack_latency.max`,
+		`.units[$unit].metrics.sendack_latency.p95`,
+		`.units[$unit].metrics.sendack_latency.p99`,
 		`avg_ms`,
+		`p95_ms`,
+		`p99_ms`,
 		`summary.csv`,
+		`latency_p95_ms`,
+		`latency_p99_ms`,
+		`latency_p95`,
+		`latency_p99`,
 		`highest_passing_qps`,
 		`first_failing_qps`,
 		`append_total_result`,

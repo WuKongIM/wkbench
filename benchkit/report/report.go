@@ -97,10 +97,12 @@ func formatMetric(name string, metric kernel.MetricResult) string {
 			avg = metric.Sum / float64(metric.Count)
 		}
 		return fmt.Sprintf(
-			"  - metric `%s` `duration`: count `%d`, avg `%s`, min `%s`, max `%s`\n",
+			"  - metric `%s` `duration`: count `%d`, avg `%s`, p95 `%s`, p99 `%s`, min `%s`, max `%s`\n",
 			name,
 			metric.Count,
 			formatMilliseconds(avg),
+			formatMilliseconds(metric.P95),
+			formatMilliseconds(metric.P99),
 			formatMilliseconds(metric.Min),
 			formatMilliseconds(metric.Max),
 		)

@@ -114,6 +114,10 @@ type MetricResult struct {
 	Min float64 `json:"min,omitempty"`
 	// Max is the maximum observed value for duration metrics.
 	Max float64 `json:"max,omitempty"`
+	// P95 is the nearest-rank 95th percentile for duration metrics.
+	P95 float64 `json:"p95,omitempty"`
+	// P99 is the nearest-rank 99th percentile for duration metrics.
+	P99 float64 `json:"p99,omitempty"`
 }
 
 // CleanupResult summarizes cleanup for one produced output.
@@ -573,9 +577,10 @@ func (e *runEnv) ObserveDuration(name string, value time.Duration, labels contra
 }
 
 type metricStore struct {
-	mu    sync.Mutex
-	types map[string]string
-	items map[string]MetricResult
+	mu              sync.Mutex
+	types           map[string]string
+	items           map[string]MetricResult
+	durationSamples map[string][]float64
 }
 
 func newMetricStore(defs []contract.MetricDef) *metricStore {
@@ -586,7 +591,11 @@ func newMetricStore(defs []contract.MetricDef) *metricStore {
 		}
 		types[def.Name] = strings.TrimSpace(def.Type)
 	}
-	return &metricStore{types: types, items: make(map[string]MetricResult)}
+	return &metricStore{
+		types:           types,
+		items:           make(map[string]MetricResult),
+		durationSamples: make(map[string][]float64),
+	}
 }
 
 func (s *metricStore) addCounter(name string, delta float64, labels contract.Labels) {
@@ -625,6 +634,7 @@ func (s *metricStore) observeDuration(name string, value time.Duration, labels c
 	item.Count++
 	item.Sum += seconds
 	s.items[key] = item
+	s.durationSamples[key] = append(s.durationSamples[key], seconds)
 }
 
 func (s *metricStore) results() map[string]MetricResult {
@@ -636,6 +646,10 @@ func (s *metricStore) results() map[string]MetricResult {
 	results := make(map[string]MetricResult, len(s.items)+len(s.types))
 	emittedNames := make(map[string]bool, len(s.items))
 	for key, item := range s.items {
+		if item.Type == "duration" {
+			item.P95 = percentileNearestRank(s.durationSamples[key], 95)
+			item.P99 = percentileNearestRank(s.durationSamples[key], 99)
+		}
 		results[key] = item
 		emittedNames[metricNameFromKey(key)] = true
 	}
@@ -646,6 +660,22 @@ func (s *metricStore) results() map[string]MetricResult {
 		results[name] = MetricResult{Type: metricType(typ, "counter")}
 	}
 	return results
+}
+
+func percentileNearestRank(values []float64, percent int) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	rank := (percent*len(sorted) + 99) / 100
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(sorted) {
+		rank = len(sorted)
+	}
+	return sorted[rank-1]
 }
 
 func metricType(declared string, fallback string) string {
