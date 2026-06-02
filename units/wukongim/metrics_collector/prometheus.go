@@ -134,10 +134,28 @@ func parseLabels(raw string) (map[string]string, bool) {
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		if key == "" || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		if !isPrometheusLabelKey(key) || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
 			return nil, false
 		}
 		labels[key] = strings.Trim(value[1:len(value)-1], " ")
 	}
 	return labels, true
+}
+
+func isPrometheusLabelKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for index, r := range key {
+		if index == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_') {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
 }

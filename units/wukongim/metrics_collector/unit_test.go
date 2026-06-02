@@ -141,9 +141,11 @@ malformed{node="1" 4
 wk_bad_label{node} 7
 wk_empty_label{="missing"} 8
 wk_unquoted_label{node=1} 9
+wk_invalid_label_key{bad-label="1"} 10
+wk_extra_brace{{node="1"} 11
 `), metricFilter{})
-	if parseErrors != 5 {
-		t.Fatalf("parse errors = %d, want 5", parseErrors)
+	if parseErrors != 7 {
+		t.Fatalf("parse errors = %d, want 7", parseErrors)
 	}
 	if len(samples) != 2 {
 		t.Fatalf("samples = %#v, want 2", samples)
