@@ -165,15 +165,7 @@ func TestSendRateSweepScriptRequiresJQForRealRun(t *testing.T) {
 	)
 	cmd.Dir = filepath.Dir(filepath.Dir(scriptPath(t)))
 	pathDir := t.TempDir()
-	for _, tool := range []string{"dirname", "date"} {
-		resolved, err := exec.LookPath(tool)
-		if err != nil {
-			t.Fatalf("find %s: %v", tool, err)
-		}
-		if err := os.Symlink(resolved, filepath.Join(pathDir, tool)); err != nil {
-			t.Fatalf("symlink %s: %v", tool, err)
-		}
-	}
+	linkPathTools(t, pathDir, "dirname", "date")
 	cmd.Env = append(os.Environ(), "PATH="+pathDir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -181,6 +173,49 @@ func TestSendRateSweepScriptRequiresJQForRealRun(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "jq is required") {
 		t.Fatalf("missing jq error should be clear, got:\n%s", out)
+	}
+}
+
+func TestSendRateSweepDryRunDoesNotRequireJQ(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir := t.TempDir()
+	cmd := exec.Command("/bin/bash", sweepScriptPath(t),
+		"--mode", "mixed",
+		"--rates", "1",
+		"--duration", "1ms",
+		"--out-dir", outDir,
+		"--dry-run",
+		"--no-start-target",
+	)
+	cmd.Dir = filepath.Dir(filepath.Dir(scriptPath(t)))
+	pathDir := t.TempDir()
+	linkPathTools(t, pathDir, "dirname", "date", "mkdir", "cat", "rm")
+	cmd.Env = append(os.Environ(), "PATH="+pathDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run should not require jq: %v\n%s", err, out)
+	}
+	summary, err := os.ReadFile(filepath.Join(outDir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(summary), "| `mixed` | `1` | `total` | `1` | `not-run`") {
+		t.Fatalf("mixed dry-run summary should include aggregate total row:\n%s", summary)
+	}
+}
+
+func linkPathTools(t *testing.T, dir string, tools ...string) {
+	t.Helper()
+	for _, tool := range tools {
+		resolved, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("find %s: %v", tool, err)
+		}
+		if err := os.Symlink(resolved, filepath.Join(dir, tool)); err != nil {
+			t.Fatalf("symlink %s: %v", tool, err)
+		}
 	}
 }
 

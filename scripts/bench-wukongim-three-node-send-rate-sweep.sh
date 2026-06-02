@@ -520,11 +520,13 @@ error_rate_for_counts() {
   local ok="$1"
   local errors="$2"
   local total=$((ok + errors))
+  local scaled
   if (( total == 0 )); then
-    printf '0\n'
+    printf '0.000000\n'
     return
   fi
-  jq -n --argjson errors "$errors" --argjson total "$total" '$errors / $total'
+  scaled=$(((errors * 1000000 + total / 2) / total))
+  printf '%d.%06d\n' "$((scaled / 1000000))" "$((scaled % 1000000))"
 }
 
 append_total_result() {
