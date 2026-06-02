@@ -961,7 +961,8 @@ func validateArtifactName(name string) error {
 	if name == "" {
 		return fmt.Errorf("artifact name is required")
 	}
-	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("artifact %q must be a simple relative file name", name)
 	}
 	return nil
@@ -971,7 +972,8 @@ func validateArtifactUnitName(name string) error {
 	if name == "" {
 		return fmt.Errorf("unit name is required to write artifacts")
 	}
-	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("unit name %q must be a simple artifact path segment", name)
 	}
 	return nil

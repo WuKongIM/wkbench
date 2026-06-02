@@ -70,6 +70,23 @@ func TestTestRunEnvRejectsUndeclaredArtifact(t *testing.T) {
 	}
 }
 
+func TestTestRunEnvRejectsUnsafeDeclaredArtifactName(t *testing.T) {
+	for _, name := range []string{".", "   "} {
+		t.Run(name, func(t *testing.T) {
+			env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
+			env.DeclareArtifacts([]contract.ArtifactDef{{Name: name}})
+
+			_, err := env.OpenArtifact(name)
+			if err == nil {
+				t.Fatal("expected unsafe artifact name error")
+			}
+			if !strings.Contains(err.Error(), "simple relative file name") {
+				t.Fatalf("error = %q, want simple relative file name", err.Error())
+			}
+		})
+	}
+}
+
 func TestBackgroundInterfacesCompile(t *testing.T) {
 	var _ contract.BackgroundUnit = backgroundCompileUnit{}
 	var _ contract.BackgroundTask = backgroundCompileTask{}

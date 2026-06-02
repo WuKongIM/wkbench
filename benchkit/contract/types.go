@@ -400,11 +400,25 @@ func (e *TestRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("artifact %q not declared", name)
 	}
+	if err := validateArtifactName(name); err != nil {
+		return nil, err
+	}
 	file, err := os.CreateTemp("", "wkbench-artifact-*")
 	if err != nil {
 		return nil, err
 	}
 	return &testArtifactWriter{env: e, name: name, file: file, contentType: def.ContentType}, nil
+}
+
+func validateArtifactName(name string) error {
+	if name == "" {
+		return fmt.Errorf("artifact name is required")
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("artifact %q must be a simple relative file name", name)
+	}
+	return nil
 }
 
 // NextID implements RunEnv.

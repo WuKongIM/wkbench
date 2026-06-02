@@ -331,48 +331,143 @@ func TestEngineWritesDeclaredArtifacts(t *testing.T) {
 	if artifact.ContentType != "application/jsonl" {
 		t.Fatalf("artifact content type = %q, want application/jsonl", artifact.ContentType)
 	}
-	if artifact.SizeBytes <= 0 {
-		t.Fatalf("artifact size = %d, want positive", artifact.SizeBytes)
+	if artifact.SizeBytes != int64(len(artifactMetricsPayload)) {
+		t.Fatalf("artifact size = %d, want %d", artifact.SizeBytes, len(artifactMetricsPayload))
 	}
 	data, err := os.ReadFile(filepath.Join(reportDir, filepath.FromSlash(artifact.Path)))
 	if err != nil {
 		t.Fatalf("artifact file missing: %v", err)
 	}
-	if string(data) != "{\"sendack_ok\":1}\n" {
+	if string(data) != artifactMetricsPayload {
 		t.Fatalf("artifact data = %q", data)
 	}
 }
 
 func TestEngineRejectsUnsafeArtifactUnitName(t *testing.T) {
-	reportDir := t.TempDir()
+	for _, unitName := range []string{"../outside", ".", "   "} {
+		t.Run(unitName, func(t *testing.T) {
+			reportDir := t.TempDir()
+			reg := registry.New()
+			reg.MustRegister(artifactMetricsUnit{})
+
+			result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+				Version: "wkbench/v2",
+				Run:     dsl.RunConfig{ID: "artifact-unsafe-unit", ReportDir: reportDir},
+				Units: map[string]dsl.UnitNode{
+					unitName: {Use: "test.artifact_metrics/v1"},
+				},
+			})
+			if err == nil {
+				t.Fatal("expected unsafe unit name error")
+			}
+			if !strings.Contains(err.Error(), "unit name") || !strings.Contains(err.Error(), "path segment") {
+				t.Fatalf("error = %q, want unit name path segment", err.Error())
+			}
+			if result.Status != kernel.StatusWorkerFailed {
+				t.Fatalf("unexpected status %s", result.Status)
+			}
+			unit := result.Units[unitName]
+			if unit.Status != kernel.StatusWorkerFailed ||
+				!strings.Contains(unit.Error, "unit name") ||
+				!strings.Contains(unit.Error, "path segment") {
+				t.Fatalf("unexpected failed unit: %#v", unit)
+			}
+			outsidePath := filepath.Join(reportDir, "outside", "metrics.jsonl")
+			if _, statErr := os.Stat(outsidePath); !os.IsNotExist(statErr) {
+				t.Fatalf("outside artifact file exists or stat failed unexpectedly: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestEngineRejectsUnsafeArtifactName(t *testing.T) {
+	for _, artifactName := range []string{".", "   "} {
+		t.Run(artifactName, func(t *testing.T) {
+			reg := registry.New()
+			reg.MustRegister(artifactNameUnit{kind: "test.unsafe_artifact_name/v1", artifactName: artifactName})
+
+			result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+				Version: "wkbench/v2",
+				Run:     dsl.RunConfig{ID: "artifact-unsafe-name", ReportDir: t.TempDir()},
+				Units: map[string]dsl.UnitNode{
+					"metrics": {Use: "test.unsafe_artifact_name/v1"},
+				},
+			})
+			if err == nil {
+				t.Fatal("expected unsafe artifact name error")
+			}
+			if !strings.Contains(err.Error(), "simple relative file name") {
+				t.Fatalf("error = %q, want simple relative file name", err.Error())
+			}
+			if result.Status != kernel.StatusWorkerFailed {
+				t.Fatalf("unexpected status %s", result.Status)
+			}
+			unit := result.Units["metrics"]
+			if unit.Status != kernel.StatusWorkerFailed ||
+				!strings.Contains(unit.Error, "simple relative file name") {
+				t.Fatalf("unexpected failed unit: %#v", unit)
+			}
+		})
+	}
+}
+
+func TestEngineRejectsArtifactWithoutReportDir(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(artifactMetricsUnit{})
 
 	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
 		Version: "wkbench/v2",
-		Run:     dsl.RunConfig{ID: "artifact-unsafe-unit", ReportDir: reportDir},
+		Run:     dsl.RunConfig{ID: "artifact-no-report-dir"},
 		Units: map[string]dsl.UnitNode{
-			"../outside": {Use: "test.artifact_metrics/v1"},
+			"metrics": {Use: "test.artifact_metrics/v1"},
 		},
 	})
 	if err == nil {
-		t.Fatal("expected unsafe unit name error")
+		t.Fatal("expected missing report_dir artifact error")
 	}
-	if !strings.Contains(err.Error(), "unit name") || !strings.Contains(err.Error(), "path segment") {
-		t.Fatalf("error = %q, want unit name path segment", err.Error())
+	if !strings.Contains(err.Error(), "run.report_dir") {
+		t.Fatalf("error = %q, want run.report_dir", err.Error())
 	}
 	if result.Status != kernel.StatusWorkerFailed {
 		t.Fatalf("unexpected status %s", result.Status)
 	}
-	unit := result.Units["../outside"]
-	if unit.Status != kernel.StatusWorkerFailed ||
-		!strings.Contains(unit.Error, "unit name") ||
-		!strings.Contains(unit.Error, "path segment") {
+	unit := result.Units["metrics"]
+	if unit.Status != kernel.StatusWorkerFailed || !strings.Contains(unit.Error, "run.report_dir") {
 		t.Fatalf("unexpected failed unit: %#v", unit)
 	}
-	outsidePath := filepath.Join(reportDir, "outside", "metrics.jsonl")
-	if _, statErr := os.Stat(outsidePath); !os.IsNotExist(statErr) {
-		t.Fatalf("outside artifact file exists or stat failed unexpectedly: %v", statErr)
+}
+
+func TestEngineSnapshotsBackgroundArtifactsAfterStop(t *testing.T) {
+	reportDir := t.TempDir()
+	reg := registry.New()
+	reg.MustRegister(backgroundArtifactUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background-artifact", ReportDir: reportDir},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_artifact/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	artifact := result.Units["metrics"].Artifacts["metrics.jsonl"]
+	if artifact.Path != "artifacts/metrics/metrics.jsonl" {
+		t.Fatalf("artifact path = %q, want artifacts/metrics/metrics.jsonl", artifact.Path)
+	}
+	if artifact.ContentType != "application/jsonl" {
+		t.Fatalf("artifact content type = %q, want application/jsonl", artifact.ContentType)
+	}
+	if artifact.SizeBytes != int64(len(backgroundArtifactPayload)) {
+		t.Fatalf("artifact size = %d, want %d", artifact.SizeBytes, len(backgroundArtifactPayload))
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, filepath.FromSlash(artifact.Path)))
+	if err != nil {
+		t.Fatalf("artifact file missing: %v", err)
+	}
+	if string(data) != backgroundArtifactPayload {
+		t.Fatalf("artifact data = %q", data)
 	}
 }
 
@@ -1349,6 +1444,8 @@ func (failingMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	return fmt.Errorf("boom")
 }
 
+const artifactMetricsPayload = "{\"sendack_ok\":1}\n"
+
 type artifactMetricsUnit struct{}
 
 func (artifactMetricsUnit) Definition() contract.Definition {
@@ -1373,7 +1470,89 @@ func (artifactMetricsUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write([]byte("{\"sendack_ok\":1}\n")); err != nil {
+	if _, err := w.Write([]byte(artifactMetricsPayload)); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+type artifactNameUnit struct {
+	kind         string
+	artifactName string
+}
+
+func (u artifactNameUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: u.kind,
+		Artifacts: []contract.ArtifactDef{
+			{Name: u.artifactName, ContentType: "application/jsonl"},
+		},
+	}
+}
+
+func (artifactNameUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (artifactNameUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (u artifactNameUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	w, err := env.OpenArtifact(u.artifactName)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(artifactMetricsPayload)); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+const backgroundArtifactPayload = "{\"stopped\":true}\n"
+
+type backgroundArtifactUnit struct{}
+
+func (backgroundArtifactUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.background_artifact/v1",
+		Artifacts: []contract.ArtifactDef{
+			{Name: "metrics.jsonl", ContentType: "application/jsonl"},
+		},
+	}
+}
+
+func (backgroundArtifactUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (backgroundArtifactUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (backgroundArtifactUnit) Run(context.Context, contract.RunEnv) error {
+	return fmt.Errorf("background unit Run should not be called")
+}
+
+func (backgroundArtifactUnit) Start(ctx context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	done := make(chan error)
+	close(done)
+	return backgroundArtifactTask{env: env, done: done}, nil
+}
+
+type backgroundArtifactTask struct {
+	env  contract.RunEnv
+	done chan error
+}
+
+func (t backgroundArtifactTask) Done() <-chan error { return t.done }
+
+func (t backgroundArtifactTask) Stop(context.Context) error {
+	w, err := t.env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(backgroundArtifactPayload)); err != nil {
 		return err
 	}
 	return w.Close()
