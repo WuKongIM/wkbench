@@ -8,9 +8,9 @@ import (
 )
 
 type metricSample struct {
-	Name   string
-	Labels map[string]string
-	Value  float64
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels"`
+	Value  float64           `json:"value"`
 }
 
 type metricFilter struct {
@@ -114,26 +114,30 @@ func parseMetricExpr(expr string) (string, map[string]string, bool) {
 	}
 	name := expr[:open]
 	rawLabels := expr[open+1 : len(expr)-1]
-	return name, parseLabels(rawLabels), true
+	labels, ok := parseLabels(rawLabels)
+	if !ok {
+		return "", nil, false
+	}
+	return name, labels, true
 }
 
-func parseLabels(raw string) map[string]string {
+func parseLabels(raw string) (map[string]string, bool) {
 	labels := make(map[string]string)
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return labels
+		return labels, true
 	}
 	for _, part := range strings.Split(raw, ",") {
 		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {
-			continue
+			return nil, false
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if key == "" || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
-			continue
+			return nil, false
 		}
 		labels[key] = strings.Trim(value[1:len(value)-1], " ")
 	}
-	return labels
+	return labels, true
 }

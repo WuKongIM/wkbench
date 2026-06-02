@@ -2,6 +2,7 @@ package metrics_collector
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -138,21 +139,20 @@ bad no-number
 wk_no_labels 2
 malformed{node="1" 4
 wk_bad_label{node} 7
+wk_empty_label{="missing"} 8
+wk_unquoted_label{node=1} 9
 `), metricFilter{})
-	if parseErrors != 2 {
-		t.Fatalf("parse errors = %d, want 2", parseErrors)
+	if parseErrors != 5 {
+		t.Fatalf("parse errors = %d, want 5", parseErrors)
 	}
-	if len(samples) != 3 {
-		t.Fatalf("samples = %#v, want 3", samples)
+	if len(samples) != 2 {
+		t.Fatalf("samples = %#v, want 2", samples)
 	}
 	if samples[0].Name != "wk_channel_online" || samples[0].Value != 3.5 || samples[0].Labels["node"] != "1" || samples[0].Labels["role"] != "leader" {
 		t.Fatalf("first sample = %#v", samples[0])
 	}
 	if samples[1].Name != "wk_no_labels" || len(samples[1].Labels) != 0 || samples[1].Value != 2 {
 		t.Fatalf("second sample = %#v", samples[1])
-	}
-	if samples[2].Name != "wk_bad_label" || samples[2].Value != 7 {
-		t.Fatalf("malformed labels should not drop sample: %#v", samples[2])
 	}
 }
 
@@ -164,6 +164,20 @@ func TestNewMetricFilterReportsRegexSide(t *testing.T) {
 	_, err = newMetricFilter(collectorSpec{Exclude: []string{"["}})
 	if err == nil || !strings.Contains(err.Error(), "exclude") {
 		t.Fatalf("exclude error = %v", err)
+	}
+}
+
+func TestMetricSampleMarshalsWithLowercaseKeys(t *testing.T) {
+	data, err := json.Marshal(metricSample{
+		Name:   "wk_messages_total",
+		Labels: map[string]string{"node": "1"},
+		Value:  12,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(data) != `{"name":"wk_messages_total","labels":{"node":"1"},"value":12}` {
+		t.Fatalf("json = %s", data)
 	}
 }
 
