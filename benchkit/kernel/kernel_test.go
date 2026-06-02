@@ -508,6 +508,46 @@ func TestEngineStopsBackgroundWhenForegroundRunFails(t *testing.T) {
 	}
 }
 
+func TestEngineReportsBackgroundStopErrorWhenForegroundRunFails(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events, stopErr: fmt.Errorf("stop failed")})
+	reg.MustRegister(failingRunUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "foreground-run-fail-background-stop-fail"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+			"fail":    {Use: "test.failing_run/v1", After: []string{"metrics"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected foreground and background stop error")
+	}
+	errorText := err.Error()
+	if !strings.Contains(errorText, `unit "fail" run`) || !strings.Contains(errorText, "boom") ||
+		!strings.Contains(errorText, `unit "metrics" stop`) || !strings.Contains(errorText, "stop failed") {
+		t.Fatalf("error = %q, want foreground run and background stop errors", errorText)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	failed := result.Units["fail"]
+	if failed.Status != kernel.StatusWorkerFailed || failed.Error != "boom" {
+		t.Fatalf("unexpected failed foreground unit: %#v", failed)
+	}
+	background := result.Units["metrics"]
+	if background.Status != kernel.StatusWorkerFailed || background.Error != "stop failed" {
+		t.Fatalf("unexpected background unit: %#v", background)
+	}
+	got := drainEvents(events)
+	want := []string{"metrics:start", "metrics:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
 func TestEngineStopsBackgroundWhenLaterPlanFails(t *testing.T) {
 	events := make(chan string, 8)
 	reg := registry.New()
