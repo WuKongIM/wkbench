@@ -1,5 +1,5 @@
-// Package metrics_collector implements wukongim.metrics_collector/v1.
-package metrics_collector
+// Package metricscollector implements wukongim.metrics_collector/v1.
+package metricscollector
 
 import (
 	"context"
@@ -77,6 +77,10 @@ func (Unit) Validate(ctx context.Context, env contract.ValidateEnv) error {
 	if err != nil {
 		return err
 	}
+	return validateSpec(spec)
+}
+
+func validateSpec(spec collectorSpec) error {
 	if spec.Interval.Duration <= 0 {
 		return fmt.Errorf("interval must be greater than zero")
 	}
@@ -118,6 +122,32 @@ func (Unit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, erro
 // Run implements contract.Unit.
 func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	return fmt.Errorf("%s is a background unit; use Start", Kind)
+}
+
+// Start implements contract.BackgroundUnit.
+func (Unit) Start(ctx context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	spec, err := decodeSpec(env)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSpec(spec); err != nil {
+		return nil, err
+	}
+	target, err := contract.Input[targetport.Target](env, "target")
+	if err != nil {
+		return nil, err
+	}
+	filter, err := newMetricFilter(spec)
+	if err != nil {
+		return nil, err
+	}
+	artifact, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return nil, err
+	}
+	task := newCollector(env, target, spec, filter, artifact)
+	task.start(ctx)
+	return task, nil
 }
 
 func decodeSpec(env contract.ValidateEnv) (collectorSpec, error) {

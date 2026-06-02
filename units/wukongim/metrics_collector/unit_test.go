@@ -1,9 +1,14 @@
-package metrics_collector
+package metricscollector
 
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,6 +250,301 @@ func TestMetricSampleMarshalsWithLowercaseKeys(t *testing.T) {
 	}
 }
 
+func TestStartScrapesAndPublishesSummaryCountersMetricsAndArtifact(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			t.Fatalf("path = %q, want /metrics", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`
+wk_messages_total{node="a"} 12
+wk_channels 3
+ignored_metric 9
+bad no-number
+`))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{
+		"interval": "1h",
+		"include":  []string{"^wk_"},
+	}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, requested)
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if summary.ScrapeTicks != 1 {
+		t.Fatalf("scrape ticks = %d, want 1", summary.ScrapeTicks)
+	}
+	if summary.SelectedSamples != 2 {
+		t.Fatalf("selected samples = %d, want 2", summary.SelectedSamples)
+	}
+	if len(summary.Nodes) != 1 || summary.Nodes[0].Address != server.URL || summary.Nodes[0].Success != 1 || summary.Nodes[0].Errors != 0 {
+		t.Fatalf("nodes = %#v", summary.Nodes)
+	}
+	if got := sampleSummaryNames(summary.Latest); strings.Join(got, ",") != "wk_channels,wk_messages_total" {
+		t.Fatalf("latest names = %#v", got)
+	}
+	if got := env.CounterValue("scrape_success_total"); got != 1 {
+		t.Fatalf("success counter = %v, want 1", got)
+	}
+	if got := env.CounterValue("scrape_error_total"); got != 0 {
+		t.Fatalf("error counter = %v, want 0", got)
+	}
+	if got := env.CounterValue("scrape_parse_error_total"); got != 1 {
+		t.Fatalf("parse error counter = %v, want 1", got)
+	}
+	if got := env.DurationValues("scrape_latency"); len(got) != 1 || got[0] < 0 {
+		t.Fatalf("latencies = %#v, want one nonnegative duration", got)
+	}
+	artifacts := env.Artifacts()
+	if len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want one", artifacts)
+	}
+	if info := artifacts["metrics.jsonl"]; info.Path == "" || info.ContentType != "application/jsonl" || info.SizeBytes == 0 {
+		t.Fatalf("artifact info = %#v", info)
+	}
+}
+
+func TestArtifactJSONLContainsLowercaseSampleFields(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`wk_messages_total{node="a"} 12` + "\n"))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{"interval": "1h"}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, requested)
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	info := env.Artifacts()["metrics.jsonl"]
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("artifact lines = %q, want one line", data)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("artifact line is not JSON: %v\n%s", err, lines[0])
+	}
+	samples, ok := record["samples"].([]any)
+	if !ok || len(samples) != 1 {
+		t.Fatalf("samples = %#v, want one sample array", record["samples"])
+	}
+	sample, ok := samples[0].(map[string]any)
+	if !ok {
+		t.Fatalf("sample = %#v", samples[0])
+	}
+	for _, key := range []string{"name", "labels", "value"} {
+		if _, ok := sample[key]; !ok {
+			t.Fatalf("sample missing lower-case key %q: %#v", key, sample)
+		}
+	}
+}
+
+func TestNonStrictScrapeErrorsAreCountedAndNonfatal(t *testing.T) {
+	env := newCollectorEnv(map[string]any{
+		"interval": "1h",
+		"timeout":  "20ms",
+	}, targetport.Target{APIAddrs: []string{"http://127.0.0.1:1"}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForCounter(t, env, "scrape_error_total", 1)
+	assertNoFatal(t, task.Done(), 40*time.Millisecond)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if summary.ScrapeTicks != 1 {
+		t.Fatalf("scrape ticks = %d, want 1", summary.ScrapeTicks)
+	}
+	if got := env.CounterValue("scrape_error_total"); got != 1 {
+		t.Fatalf("error counter = %v, want 1", got)
+	}
+	if len(summary.Nodes) != 1 || summary.Nodes[0].Errors != 1 || summary.Nodes[0].Success != 0 {
+		t.Fatalf("nodes = %#v", summary.Nodes)
+	}
+}
+
+func TestStrictScrapeErrorBecomesFatal(t *testing.T) {
+	env := newCollectorEnv(map[string]any{
+		"interval":               "1h",
+		"timeout":                "20ms",
+		"fail_on_scrape_error":   true,
+		"max_consecutive_errors": 0,
+		"max_summary_metrics":    3,
+	}, targetport.Target{APIAddrs: []string{"http://127.0.0.1:1"}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fatal := waitForFatal(t, task.Done())
+	if !strings.Contains(fatal.Error(), "scrape") {
+		t.Fatalf("fatal error = %v, want scrape", fatal)
+	}
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop after fatal: %v", err)
+	}
+}
+
+func TestStopAfterFatalPublishesSummaryAndClosesArtifact(t *testing.T) {
+	env := newCollectorEnv(map[string]any{
+		"interval":               "1h",
+		"timeout":                "20ms",
+		"fail_on_scrape_error":   true,
+		"max_consecutive_errors": 1,
+	}, targetport.Target{APIAddrs: []string{"http://127.0.0.1:1"}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = waitForFatal(t, task.Done())
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop after fatal: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if summary.ScrapeTicks != 1 || len(summary.Nodes) != 1 || summary.Nodes[0].Errors != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if info := env.Artifacts()["metrics.jsonl"]; info.Path == "" || info.SizeBytes == 0 {
+		t.Fatalf("artifact info = %#v", info)
+	}
+}
+
+func TestMaxSummaryMetricsCapsLatestAndCountsDroppedMetricNames(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`
+wk_c{node="1"} 3
+wk_a{node="1"} 1
+wk_b{node="1"} 2
+`))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{
+		"interval":            "1h",
+		"max_summary_metrics": 2,
+	}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, requested)
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if len(summary.Latest) != 2 {
+		t.Fatalf("latest = %#v, want cap of 2", summary.Latest)
+	}
+	if summary.DroppedMetricNames != 1 {
+		t.Fatalf("dropped metric names = %d, want 1", summary.DroppedMetricNames)
+	}
+	if got := sampleSummaryNames(summary.Latest); strings.Join(got, ",") != "wk_a,wk_b" {
+		t.Fatalf("latest names = %#v, want deterministic capped order", got)
+	}
+}
+
+func TestLatencyPercentilesAreNonnegativeMilliseconds(t *testing.T) {
+	var requests int64
+	requested := make(chan struct{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&requests, 1)
+		_, _ = w.Write([]byte("wk_messages_total 1\n"))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{"interval": "10ms"}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequests(t, requested, 3)
+	waitForCounter(t, env, "scrape_success_total", 3)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if summary.LatencyP95MS < 0 || summary.LatencyP99MS < 0 {
+		t.Fatalf("latency summary = p95 %.3f p99 %.3f, want nonnegative", summary.LatencyP95MS, summary.LatencyP99MS)
+	}
+	if summary.LatencyP99MS > 1000 {
+		t.Fatalf("latency p99 = %.3fms, want millisecond units", summary.LatencyP99MS)
+	}
+	if got := atomic.LoadInt64(&requests); got < 3 {
+		t.Fatalf("requests = %d, want at least 3", got)
+	}
+}
+
+func TestStopIsIdempotent(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("wk_messages_total 1\n"))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{"interval": "1h"}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, requested)
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	outputSummary(t, env)
+}
+
 func assertMetric(t *testing.T, metrics []contract.MetricDef, name, typ string) {
 	t.Helper()
 	for _, metric := range metrics {
@@ -266,6 +566,94 @@ func sampleNames(samples []metricSample) []string {
 	return names
 }
 
+func sampleSummaryNames(samples []wukongimport.MetricSampleSummary) []string {
+	names := make([]string, 0, len(samples))
+	for _, sample := range samples {
+		names = append(names, sample.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func newEnv(spec map[string]any) *contract.TestRunEnv {
 	return contract.NewTestRunEnv("run-1", "collector", nil, spec)
+}
+
+func newCollectorEnv(spec map[string]any, target targetport.Target) *contract.TestRunEnv {
+	env := contract.NewTestRunEnv("run-1", "collector", map[string]any{"target": target}, spec)
+	env.DeclareArtifacts(Unit{}.Definition().Artifacts)
+	return env
+}
+
+func outputSummary(t *testing.T, env *contract.TestRunEnv) wukongimport.MetricsSummary {
+	t.Helper()
+	output, ok := env.Output("summary")
+	if !ok {
+		t.Fatalf("summary output missing")
+	}
+	summary, ok := output.(wukongimport.MetricsSummary)
+	if !ok {
+		t.Fatalf("summary output = %T, want MetricsSummary", output)
+	}
+	return summary
+}
+
+func waitForRequest(t *testing.T, requested <-chan struct{}) {
+	t.Helper()
+	waitForRequests(t, requested, 1)
+}
+
+func waitForRequests(t *testing.T, requested <-chan struct{}, n int) {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for i := 0; i < n; i++ {
+		select {
+		case <-requested:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for request %d/%d", i+1, n)
+		}
+	}
+}
+
+func waitForFatal(t *testing.T, done <-chan error) error {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case err, ok := <-done:
+		if !ok {
+			t.Fatalf("Done closed without fatal error")
+		}
+		if err == nil {
+			t.Fatalf("Done yielded nil, want fatal error")
+		}
+		return err
+	case <-timer.C:
+		t.Fatalf("timed out waiting for fatal error")
+		return nil
+	}
+}
+
+func assertNoFatal(t *testing.T, done <-chan error, d time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		t.Fatalf("Done yielded %v, want worker to keep running", err)
+	case <-timer.C:
+	}
+}
+
+func waitForCounter(t *testing.T, env *contract.TestRunEnv, name string, want float64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := env.CounterValue(name); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("counter %q = %v, want at least %v", name, env.CounterValue(name), want)
 }
