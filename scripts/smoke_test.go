@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"encoding/csv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -351,9 +352,26 @@ func TestSendRateSweepDryRunMixedHasAggregateAndNoZeroRates(t *testing.T) {
 	if !strings.Contains(string(summary), "| `mixed` | `1` | `total` | `1` | `not-run`") {
 		t.Fatalf("mixed summary should include aggregate total row:\n%s", summary)
 	}
-	for _, want := range []string{"latency_p95", "latency_p99"} {
+	for _, want := range []string{"latency_p95", "latency_p99", "queue_p95", "queue_p99", "wire_p95", "wire_p99"} {
 		if !strings.Contains(string(summary), want) {
 			t.Fatalf("mixed summary should include %q column:\n%s", want, summary)
+		}
+	}
+	csvData, err := os.ReadFile(filepath.Join(outDir, "summary.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(strings.NewReader(string(csvData))).ReadAll()
+	if err != nil {
+		t.Fatalf("read summary.csv: %v\n%s", err, csvData)
+	}
+	if len(records) < 2 {
+		t.Fatalf("summary.csv should include header and rows:\n%s", csvData)
+	}
+	width := len(records[0])
+	for index, record := range records {
+		if len(record) != width {
+			t.Fatalf("summary.csv row %d has %d columns, want %d:\n%s", index+1, len(record), width, csvData)
 		}
 	}
 	for _, scenario := range []string{
@@ -390,14 +408,28 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 		`.units[$unit].metrics.sendack_latency.max`,
 		`.units[$unit].metrics.sendack_latency.p95`,
 		`.units[$unit].metrics.sendack_latency.p99`,
+		`.units[$unit].metrics.sendack_queue_latency.sum`,
+		`.units[$unit].metrics.sendack_queue_latency.p95`,
+		`.units[$unit].metrics.sendack_queue_latency.p99`,
+		`.units[$unit].metrics.sendack_wire_latency.sum`,
+		`.units[$unit].metrics.sendack_wire_latency.p95`,
+		`.units[$unit].metrics.sendack_wire_latency.p99`,
 		`avg_ms`,
 		`p95_ms`,
 		`p99_ms`,
 		`summary.csv`,
 		`latency_p95_ms`,
 		`latency_p99_ms`,
+		`queue_p95_ms`,
+		`queue_p99_ms`,
+		`wire_p95_ms`,
+		`wire_p99_ms`,
 		`latency_p95`,
 		`latency_p99`,
+		`queue_p95`,
+		`queue_p99`,
+		`wire_p95`,
+		`wire_p99`,
 		`highest_passing_qps`,
 		`first_failing_qps`,
 		`append_total_result`,

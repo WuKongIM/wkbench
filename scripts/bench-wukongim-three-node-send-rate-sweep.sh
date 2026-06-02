@@ -483,8 +483,18 @@ extract_unit_row() {
     | (.units[$unit].metrics.sendack_latency.max // 0) as $lat_max
     | (.units[$unit].metrics.sendack_latency.p95 // 0) as $lat_p95
     | (.units[$unit].metrics.sendack_latency.p99 // 0) as $lat_p99
+    | (.units[$unit].metrics.sendack_queue_latency.count // 0) as $queue_count
+    | (.units[$unit].metrics.sendack_queue_latency.sum // 0) as $queue_sum
+    | (.units[$unit].metrics.sendack_queue_latency.p95 // 0) as $queue_p95
+    | (.units[$unit].metrics.sendack_queue_latency.p99 // 0) as $queue_p99
+    | (.units[$unit].metrics.sendack_wire_latency.count // 0) as $wire_count
+    | (.units[$unit].metrics.sendack_wire_latency.sum // 0) as $wire_sum
+    | (.units[$unit].metrics.sendack_wire_latency.p95 // 0) as $wire_p95
+    | (.units[$unit].metrics.sendack_wire_latency.p99 // 0) as $wire_p99
     | (if $lat_count == 0 then 0 else ($lat_sum / $lat_count * 1000) end) as $avg_ms
-    | [$mode, $total_qps, $unit, $offered_qps, $status, $ok, $errors, $error_rate, $avg_ms, ($lat_p95 * 1000), ($lat_p99 * 1000), ($lat_min * 1000), ($lat_max * 1000), $report_dir]
+    | (if $queue_count == 0 then 0 else ($queue_sum / $queue_count * 1000) end) as $queue_avg_ms
+    | (if $wire_count == 0 then 0 else ($wire_sum / $wire_count * 1000) end) as $wire_avg_ms
+    | [$mode, $total_qps, $unit, $offered_qps, $status, $ok, $errors, $error_rate, $avg_ms, ($lat_p95 * 1000), ($lat_p99 * 1000), ($lat_min * 1000), ($lat_max * 1000), $queue_avg_ms, ($queue_p95 * 1000), ($queue_p99 * 1000), $wire_avg_ms, ($wire_p95 * 1000), ($wire_p99 * 1000), $report_dir]
     | @csv
     ' "$report"
 }
@@ -504,8 +514,18 @@ extract_unit_values() {
     | (.units[$unit].metrics.sendack_latency.max // 0) as $lat_max
     | (.units[$unit].metrics.sendack_latency.p95 // 0) as $lat_p95
     | (.units[$unit].metrics.sendack_latency.p99 // 0) as $lat_p99
+    | (.units[$unit].metrics.sendack_queue_latency.count // 0) as $queue_count
+    | (.units[$unit].metrics.sendack_queue_latency.sum // 0) as $queue_sum
+    | (.units[$unit].metrics.sendack_queue_latency.p95 // 0) as $queue_p95
+    | (.units[$unit].metrics.sendack_queue_latency.p99 // 0) as $queue_p99
+    | (.units[$unit].metrics.sendack_wire_latency.count // 0) as $wire_count
+    | (.units[$unit].metrics.sendack_wire_latency.sum // 0) as $wire_sum
+    | (.units[$unit].metrics.sendack_wire_latency.p95 // 0) as $wire_p95
+    | (.units[$unit].metrics.sendack_wire_latency.p99 // 0) as $wire_p99
     | (if $lat_count == 0 then 0 else ($lat_sum / $lat_count * 1000) end) as $avg_ms
-    | [$ok, $errors, $error_rate, $avg_ms, ($lat_p95 * 1000), ($lat_p99 * 1000), ($lat_min * 1000), ($lat_max * 1000)]
+    | (if $queue_count == 0 then 0 else ($queue_sum / $queue_count * 1000) end) as $queue_avg_ms
+    | (if $wire_count == 0 then 0 else ($wire_sum / $wire_count * 1000) end) as $wire_avg_ms
+    | [$ok, $errors, $error_rate, $avg_ms, ($lat_p95 * 1000), ($lat_p99 * 1000), ($lat_min * 1000), ($lat_max * 1000), $queue_avg_ms, ($queue_p95 * 1000), ($queue_p99 * 1000), $wire_avg_ms, ($wire_p95 * 1000), ($wire_p99 * 1000)]
     | @tsv
     ' "$report"
 }
@@ -516,8 +536,8 @@ append_missing_unit_result() {
   local offered_qps="$3"
   local status="$4"
   local step_dir="$5"
-  printf '%s,%s,%s,%s,%s,0,0,0,0,0,0,0,0,%s\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$OUT_DIR/summary.csv"
-  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
+  printf '%s,%s,%s,%s,%s,0,0,0,0,0,0,0,0,0,0,0,0,0,0,%s\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
 error_rate_for_counts() {
@@ -541,8 +561,10 @@ append_total_result() {
   local step_dir="$5"
   local error_rate
   error_rate="$(error_rate_for_counts "$ok" "$errors")"
-  printf '%s,%s,total,%s,%s,%s,%s,%s,,,,,,%s\n' "$MODE" "$total_qps" "$total_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$OUT_DIR/summary.csv"
-  printf '| `%s` | `%s` | `total` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `%s` |\n' \
+  printf '%s,%s,total,%s,%s,%s,%s,%s' "$MODE" "$total_qps" "$total_qps" "$status" "$ok" "$errors" "$error_rate" >> "$OUT_DIR/summary.csv"
+  printf ',%.0s' {1..11} >> "$OUT_DIR/summary.csv"
+  printf ',%s\n' "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `total` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `n/a` | `%s` |\n' \
     "$MODE" "$total_qps" "$total_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
@@ -568,7 +590,7 @@ append_unit_result() {
   local offered_qps="$4"
   local status="$5"
   local step_dir="$6"
-  local values ok errors error_rate avg_ms p95_ms p99_ms min_ms max_ms
+  local values ok errors error_rate avg_ms p95_ms p99_ms min_ms max_ms queue_avg_ms queue_p95_ms queue_p99_ms wire_avg_ms wire_p95_ms wire_p99_ms
 
   if [[ ! -f "$report" ]]; then
     append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "$status" "$step_dir"
@@ -578,11 +600,11 @@ append_unit_result() {
   extract_unit_row "$report" "$unit" "$MODE" "$total_qps" "$offered_qps" "$status" >> "$OUT_DIR/summary.csv"
   values="$(extract_unit_values "$report" "$unit" || true)"
   if [[ -z "$values" ]]; then
-    values=$'0\t0\t0\t0\t0\t0\t0\t0'
+    values=$'0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0'
   fi
-  IFS=$'\t' read -r ok errors error_rate avg_ms p95_ms p99_ms min_ms max_ms <<< "$values"
-  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%s` |\n' \
-    "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$ok" "$errors" "$error_rate" "$avg_ms" "$p95_ms" "$p99_ms" "$min_ms" "$max_ms" "$step_dir" >> "$SUMMARY_ROWS"
+  IFS=$'\t' read -r ok errors error_rate avg_ms p95_ms p99_ms min_ms max_ms queue_avg_ms queue_p95_ms queue_p99_ms wire_avg_ms wire_p95_ms wire_p99_ms <<< "$values"
+  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%.2fms` | `%s` |\n' \
+    "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$ok" "$errors" "$error_rate" "$avg_ms" "$p95_ms" "$p99_ms" "$min_ms" "$max_ms" "$queue_avg_ms" "$queue_p95_ms" "$queue_p99_ms" "$wire_avg_ms" "$wire_p95_ms" "$wire_p99_ms" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
 append_step_results() {
@@ -634,8 +656,8 @@ write_summary_markdown() {
     printf -- '- status: `%s`\n' "$status"
     printf -- '- highest_passing_qps: `%s`\n' "$highest_passing_qps"
     printf -- '- first_failing_qps: `%s`\n\n' "$first_failing_qps"
-    printf '| mode | total_qps | workload | offered_qps | status | sendack_ok | sendack_errors | error_rate | latency_avg | latency_p95 | latency_p99 | latency_min | latency_max | report_dir |\n'
-    printf '| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n'
+    printf '| mode | total_qps | workload | offered_qps | status | sendack_ok | sendack_errors | error_rate | latency_avg | latency_p95 | latency_p99 | latency_min | latency_max | queue_avg | queue_p95 | queue_p99 | wire_avg | wire_p95 | wire_p99 | report_dir |\n'
+    printf '| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n'
     cat "$SUMMARY_ROWS"
   } > "$OUT_DIR/summary.md"
 }
@@ -766,7 +788,7 @@ fi
 mkdir -p "$OUT_DIR/steps"
 SUMMARY_ROWS="$OUT_DIR/.summary-rows.md"
 : > "$SUMMARY_ROWS"
-printf 'mode,total_qps,workload,offered_qps,status,sendack_ok,sendack_errors,error_rate,latency_avg_ms,latency_p95_ms,latency_p99_ms,latency_min_ms,latency_max_ms,report_dir\n' > "$OUT_DIR/summary.csv"
+printf 'mode,total_qps,workload,offered_qps,status,sendack_ok,sendack_errors,error_rate,latency_avg_ms,latency_p95_ms,latency_p99_ms,latency_min_ms,latency_max_ms,queue_avg_ms,queue_p95_ms,queue_p99_ms,wire_avg_ms,wire_p95_ms,wire_p99_ms,report_dir\n' > "$OUT_DIR/summary.csv"
 
 IFS=',' read -r -a RATE_VALUES <<< "$RATES"
 step_index=0

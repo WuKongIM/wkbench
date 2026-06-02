@@ -78,6 +78,8 @@ func (Unit) Definition() contract.Definition {
 			{Name: "sendack_success_total", Type: "counter"},
 			{Name: "sendack_error_total", Type: "counter"},
 			{Name: "sendack_latency", Type: "duration"},
+			{Name: "sendack_queue_latency", Type: "duration"},
+			{Name: "sendack_wire_latency", Type: "duration"},
 		},
 	}
 }
@@ -248,6 +250,8 @@ func applyResult(env contract.RunEnv, summary *trafficport.Summary, result sendR
 	}
 	env.EmitCounter("sendack_success_total", 1, nil)
 	env.ObserveDuration("sendack_latency", result.latency, nil)
+	env.ObserveDuration("sendack_queue_latency", result.ack.QueueLatency, nil)
+	env.ObserveDuration("sendack_wire_latency", result.ack.WireLatency, nil)
 	summary.SendackOK++
 	summary.LastMessageID = result.ack.MessageID
 }

@@ -140,7 +140,9 @@ func (c *wkClient) SendGroupAndWaitAck(ctx context.Context, req wkprotoport.Grou
 }
 
 func (c *wkClient) SendAndWaitAck(ctx context.Context, req wkprotoport.SendRequest) (wkprotoport.SendAck, error) {
+	queueStart := time.Now()
 	c.opMu.Lock()
+	queueLatency := time.Since(queueStart)
 	defer c.opMu.Unlock()
 	ctx, cancel := c.withRequestTimeout(ctx, req.Timeout)
 	defer cancel()
@@ -152,6 +154,7 @@ func (c *wkClient) SendAndWaitAck(ctx context.Context, req wkprotoport.SendReque
 		ChannelType: req.ChannelType,
 		Payload:     req.Payload,
 	}
+	wireStart := time.Now()
 	if err := c.send(ctx, send); err != nil {
 		return wkprotoport.SendAck{}, err
 	}
@@ -170,7 +173,12 @@ func (c *wkClient) SendAndWaitAck(ctx context.Context, req wkprotoport.SendReque
 		if ack.ReasonCode != frame.ReasonSuccess {
 			return wkprotoport.SendAck{}, fmt.Errorf("sendack reason code %s", ack.ReasonCode)
 		}
-		return wkprotoport.SendAck{MessageID: ack.MessageID, MessageSeq: ack.MessageSeq}, nil
+		return wkprotoport.SendAck{
+			MessageID:    ack.MessageID,
+			MessageSeq:   ack.MessageSeq,
+			QueueLatency: queueLatency,
+			WireLatency:  time.Since(wireStart),
+		}, nil
 	}
 }
 

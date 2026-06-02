@@ -66,6 +66,12 @@ func TestSendAndWaitAckUsesRequestedChannelType(t *testing.T) {
 	if ack.MessageID != 42 || ack.MessageSeq != 3 {
 		t.Fatalf("unexpected ack: %#v", ack)
 	}
+	if ack.QueueLatency <= 0 {
+		t.Fatalf("expected queue latency to be recorded, got %s", ack.QueueLatency)
+	}
+	if ack.WireLatency <= 0 {
+		t.Fatalf("expected wire latency to be recorded, got %s", ack.WireLatency)
+	}
 	written := conn.written.Bytes()
 	decoded, _, err := proto.DecodeFrame(written, frame.LatestVersion)
 	if err != nil {
@@ -77,6 +83,49 @@ func TestSendAndWaitAckUsesRequestedChannelType(t *testing.T) {
 	}
 	if send.ChannelID != "u2" || send.ChannelType != frame.ChannelTypePerson || send.ClientMsgNo != "msg-1" {
 		t.Fatalf("unexpected send packet: %#v", send)
+	}
+}
+
+func TestSendAndWaitAckMeasuresClientQueueLatencyBeforeRequestTimeout(t *testing.T) {
+	proto := protocolcodec.New()
+	ackBytes, err := proto.EncodeFrame(&frame.SendackPacket{
+		ClientSeq:   1,
+		ClientMsgNo: "msg-1",
+		ReasonCode:  frame.ReasonSuccess,
+		MessageID:   42,
+		MessageSeq:  3,
+	}, frame.LatestVersion)
+	if err != nil {
+		t.Fatalf("encode ack: %v", err)
+	}
+	client := &wkClient{conn: &bufferConn{read: bytes.NewReader(ackBytes)}, proto: proto, operationTimeout: time.Second}
+	client.opMu.Lock()
+	done := make(chan wkprotoport.SendAck, 1)
+	errs := make(chan error, 1)
+	go func() {
+		ack, err := client.SendAndWaitAck(context.Background(), wkprotoport.SendRequest{
+			ChannelID:   "u2",
+			ChannelType: frame.ChannelTypePerson,
+			SenderUID:   "u1",
+			ClientMsgNo: "msg-1",
+			Payload:     []byte("hello"),
+			Timeout:     500 * time.Millisecond,
+		})
+		done <- ack
+		errs <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	client.opMu.Unlock()
+
+	ack := <-done
+	if err := <-errs; err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if ack.QueueLatency < 5*time.Millisecond {
+		t.Fatalf("queue latency = %s, want it to include time waiting for opMu", ack.QueueLatency)
+	}
+	if ack.WireLatency <= 0 || ack.WireLatency >= ack.QueueLatency {
+		t.Fatalf("unexpected wire latency %s with queue latency %s", ack.WireLatency, ack.QueueLatency)
 	}
 }
 

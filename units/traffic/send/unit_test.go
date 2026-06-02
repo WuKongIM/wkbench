@@ -68,6 +68,12 @@ func TestSendUsesTargetsAndEmitsSummaryAndLatency(t *testing.T) {
 	if samples := env.DurationValues("sendack_latency"); len(samples) != 2 {
 		t.Fatalf("expected two latency samples, got %d", len(samples))
 	}
+	if samples := env.DurationValues("sendack_queue_latency"); len(samples) != 2 || samples[0] != time.Millisecond || samples[1] != 2*time.Millisecond {
+		t.Fatalf("unexpected queue latency samples: %#v", samples)
+	}
+	if samples := env.DurationValues("sendack_wire_latency"); len(samples) != 2 || samples[0] != 3*time.Millisecond || samples[1] != 4*time.Millisecond {
+		t.Fatalf("unexpected wire latency samples: %#v", samples)
+	}
 	requests := client.Requests()
 	if len(requests) != 2 {
 		t.Fatalf("expected two requests, got %d", len(requests))
@@ -339,7 +345,12 @@ func (c *recordingClient) SendAndWaitAck(ctx context.Context, req wkprotoport.Se
 	if req.ChannelID == "" || req.SenderUID == "" || req.ClientMsgNo == "" || len(req.Payload) != 16 {
 		return wkprotoport.SendAck{}, errors.New("bad request")
 	}
-	return wkprotoport.SendAck{MessageID: int64(call), MessageSeq: uint64(call)}, nil
+	return wkprotoport.SendAck{
+		MessageID:    int64(call),
+		MessageSeq:   uint64(call),
+		QueueLatency: time.Duration(call) * time.Millisecond,
+		WireLatency:  time.Duration(call+2) * time.Millisecond,
+	}, nil
 }
 
 func (c *recordingClient) Requests() []wkprotoport.SendRequest {
