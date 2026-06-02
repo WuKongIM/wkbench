@@ -286,11 +286,14 @@ func decodeSpec(env contract.ValidateEnv) (Spec, error) {
 }
 
 func sendOne(ctx context.Context, env contract.RunEnv, spec Spec, ackTimeout time.Duration, targets channelport.SendTargetSet, sender wkprotoport.MessageSender, msgIndex int64) sendResult {
-	target := targets.At(int(msgIndex % int64(targets.Count())))
+	targetCount := int64(targets.Count())
+	targetIndex := msgIndex % targetCount
+	targetSendIndex := msgIndex / targetCount
+	target := targets.At(int(targetIndex))
 	if len(target.SenderUIDs) == 0 {
 		return sendResult{err: fmt.Errorf("send: target %q has no online senders", target.ChannelID)}
 	}
-	senderUID := pickSender(target, spec.SenderPick, msgIndex)
+	senderUID := pickSender(target, spec.SenderPick, targetSendIndex)
 	client, ok := sender.MessageClient(senderUID)
 	if !ok {
 		return sendResult{err: fmt.Errorf("send: missing sender client %q", senderUID)}

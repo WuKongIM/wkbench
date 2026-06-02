@@ -92,6 +92,57 @@ func TestSendUsesTargetsAndEmitsSummaryAndLatency(t *testing.T) {
 	}
 }
 
+func TestSendRoundRobinRotatesSendersWithinEachTarget(t *testing.T) {
+	client := &recordingClient{}
+	sender := &messageSender{clients: map[string]wkprotoport.MessageClient{
+		"u1": client,
+		"u2": client,
+		"u3": client,
+		"u4": client,
+	}}
+	unit := sendunit.Unit{}
+	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
+		"targets": targetSet{items: []channelport.SendTarget{
+			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1", "u2"}},
+			{ChannelID: "g2", ChannelType: 2, SenderUIDs: []string{"u3", "u4"}},
+		}},
+		"sender": sender,
+	}, map[string]any{
+		"rate":          "4000/s",
+		"payload_size":  16,
+		"sender_pick":   "round_robin",
+		"ack_timeout":   "1s",
+		"max_in_flight": 1,
+	})
+	env.SetRunDuration(time.Millisecond)
+
+	if err := unit.Validate(context.Background(), env); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if err := unit.Run(context.Background(), env); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	requests := client.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("expected four requests, got %d", len(requests))
+	}
+	want := []struct {
+		channelID string
+		senderUID string
+	}{
+		{channelID: "g1", senderUID: "u1"},
+		{channelID: "g2", senderUID: "u3"},
+		{channelID: "g1", senderUID: "u2"},
+		{channelID: "g2", senderUID: "u4"},
+	}
+	for index, expected := range want {
+		if requests[index].ChannelID != expected.channelID || requests[index].SenderUID != expected.senderUID {
+			t.Fatalf("request %d = channel %q sender %q, want channel %q sender %q; all requests: %#v", index, requests[index].ChannelID, requests[index].SenderUID, expected.channelID, expected.senderUID, requests)
+		}
+	}
+}
+
 func TestSendRecordsErrorsAndContinues(t *testing.T) {
 	client := &recordingClient{errOnCall: 2}
 	unit := sendunit.Unit{}
