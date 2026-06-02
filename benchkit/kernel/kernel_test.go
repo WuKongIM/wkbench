@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,11 +394,57 @@ func TestEngineRecordsUnitTimeline(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	unit := result.Units["work"]
+	assertUnitTimeline(t, unit)
+}
+
+func TestEngineRecordsTimelineWhenUnitRunFails(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(failingTimelineUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "timeline-fail"},
+		Units: map[string]dsl.UnitNode{
+			"fail": {Use: "test.failing_timeline/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected run error")
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	unit := result.Units["fail"]
+	if unit.Status != kernel.StatusWorkerFailed || unit.Error != "boom" {
+		t.Fatalf("unexpected failed unit: %#v", unit)
+	}
+	assertUnitTimeline(t, unit)
+}
+
+func assertUnitTimeline(t *testing.T, unit kernel.UnitResult) {
+	t.Helper()
 	if unit.StartedAt == "" {
 		t.Fatalf("StartedAt is empty")
 	}
 	if unit.EndedAt == "" {
 		t.Fatalf("EndedAt is empty")
+	}
+	started, err := time.Parse(time.RFC3339Nano, unit.StartedAt)
+	if err != nil {
+		t.Fatalf("StartedAt parse: %v", err)
+	}
+	ended, err := time.Parse(time.RFC3339Nano, unit.EndedAt)
+	if err != nil {
+		t.Fatalf("EndedAt parse: %v", err)
+	}
+	if ended.Before(started) {
+		t.Fatalf("EndedAt %q is before StartedAt %q", unit.EndedAt, unit.StartedAt)
+	}
+	if !strings.HasSuffix(unit.StartedAt, "Z") {
+		t.Fatalf("StartedAt = %q, want UTC timestamp ending in Z", unit.StartedAt)
+	}
+	if !strings.HasSuffix(unit.EndedAt, "Z") {
+		t.Fatalf("EndedAt = %q, want UTC timestamp ending in Z", unit.EndedAt)
 	}
 	if unit.ElapsedMS <= 0 {
 		t.Fatalf("ElapsedMS = %d, want positive", unit.ElapsedMS)
@@ -416,6 +463,20 @@ func (timelineUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, erro
 func (timelineUnit) Run(context.Context, contract.RunEnv) error {
 	time.Sleep(time.Millisecond)
 	return nil
+}
+
+type failingTimelineUnit struct{}
+
+func (failingTimelineUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.failing_timeline/v1"}
+}
+func (failingTimelineUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (failingTimelineUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (failingTimelineUnit) Run(context.Context, contract.RunEnv) error {
+	time.Sleep(time.Millisecond)
+	return fmt.Errorf("boom")
 }
 
 const testValuePort = contract.PortType("port.test.value/v1")

@@ -44,6 +44,12 @@ func TestWriteDirIncludesUnitTiming(t *testing.T) {
 				EndedAt:   "2026-06-02T01:02:04Z",
 				ElapsedMS: 1000,
 			},
+			"zero": {
+				Kind:      "test.timeline/v1",
+				Status:    kernel.StatusCompleted,
+				StartedAt: "2026-06-02T02:02:03Z",
+				EndedAt:   "2026-06-02T02:02:04Z",
+			},
 		},
 	}
 	if err := report.WriteDir(dir, result); err != nil {
@@ -57,6 +63,11 @@ func TestWriteDirIncludesUnitTiming(t *testing.T) {
 	for _, want := range []string{"elapsed `1000ms`", "started `2026-06-02T01:02:03Z`", "ended `2026-06-02T01:02:04Z`"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"elapsed `0ms`", "started `2026-06-02T02:02:03Z`", "ended `2026-06-02T02:02:04Z`"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("summary includes zero elapsed timing %q:\n%s", unwanted, got)
 		}
 	}
 }
