@@ -527,6 +527,83 @@ func TestEngineCancelsForegroundWhenBackgroundFails(t *testing.T) {
 	}
 }
 
+func TestEngineStopsBackgroundWithCallerContextAfterBackgroundFails(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{
+		events:            events,
+		doneErr:           fmt.Errorf("scrape failed"),
+		doneDelay:         10 * time.Millisecond,
+		failIfStopCtxDone: true,
+	})
+	reg.MustRegister(cancelAwareForegroundUnit{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := kernel.New(reg).Run(ctx, dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background-fatal-stop-uses-caller-context"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+			"traffic": {Use: "test.cancel_aware_foreground/v1", After: []string{"metrics"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected background fatal error")
+	}
+	if strings.Contains(err.Error(), "stop context canceled") {
+		t.Fatalf("stop received canceled run context: %v", err)
+	}
+	background := result.Units["metrics"]
+	if background.Status != kernel.StatusWorkerFailed || !strings.Contains(background.Error, "scrape failed") {
+		t.Fatalf("unexpected background unit: %#v", background)
+	}
+	summary, ok := background.Outputs["summary"].Value.(map[string]any)
+	if !ok || summary["stopped"] != true {
+		t.Fatalf("background output was not snapshotted after Stop: %#v", background.Outputs)
+	}
+	if background.Metrics["ticks_total"].Sum != 1 {
+		t.Fatalf("background metrics missing stop emission: %#v", background.Metrics)
+	}
+}
+
+func TestEngineReturnsAllSimultaneousBackgroundFatalErrors(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_a/v1", events: events, doneErr: fmt.Errorf("scrape a failed"), doneDelay: 5 * time.Millisecond})
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_b/v1", events: events, doneErr: fmt.Errorf("scrape b failed"), doneDelay: 5 * time.Millisecond})
+	reg.MustRegister(cancelAwareForegroundUnit{afterCancelDelay: 20 * time.Millisecond})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "multiple-background-fatals"},
+		Units: map[string]dsl.UnitNode{
+			"a":       {Use: "test.bg_a/v1"},
+			"b":       {Use: "test.bg_b/v1", After: []string{"a"}},
+			"traffic": {Use: "test.cancel_aware_foreground/v1", After: []string{"b"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected background fatal errors")
+	}
+	errorText := err.Error()
+	if !strings.Contains(errorText, `unit "a" background`) || !strings.Contains(errorText, "scrape a failed") ||
+		!strings.Contains(errorText, `unit "b" background`) || !strings.Contains(errorText, "scrape b failed") {
+		t.Fatalf("error = %q, want both background fatal errors", errorText)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	a := result.Units["a"]
+	if a.Status != kernel.StatusWorkerFailed || !strings.Contains(a.Error, "scrape a failed") {
+		t.Fatalf("unexpected background a unit: %#v", a)
+	}
+	b := result.Units["b"]
+	if b.Status != kernel.StatusWorkerFailed || !strings.Contains(b.Error, "scrape b failed") {
+		t.Fatalf("unexpected background b unit: %#v", b)
+	}
+}
+
 func TestEngineRecordsBackgroundDoneFatalDuringShutdown(t *testing.T) {
 	events := make(chan string, 8)
 	reg := registry.New()
@@ -1289,16 +1366,17 @@ func (u lifecycleProbeUnit) Run(context.Context, contract.RunEnv) error {
 }
 
 type backgroundProbeUnit struct {
-	kind          string
-	title         string
-	events        chan string
-	startErr      error
-	nilTask       bool
-	stopErr       error
-	doneErr       error
-	doneErrOnStop bool
-	leaveDoneOpen bool
-	doneDelay     time.Duration
+	kind              string
+	title             string
+	events            chan string
+	startErr          error
+	nilTask           bool
+	stopErr           error
+	doneErr           error
+	doneErrOnStop     bool
+	leaveDoneOpen     bool
+	failIfStopCtxDone bool
+	doneDelay         time.Duration
 }
 
 func (u backgroundProbeUnit) Definition() contract.Definition {
@@ -1331,14 +1409,15 @@ func (u backgroundProbeUnit) Start(_ context.Context, env contract.RunEnv) (cont
 		return nil, nil
 	}
 	task := &backgroundProbeTask{
-		name:          name,
-		events:        u.events,
-		env:           env,
-		done:          make(chan error, 1),
-		stopErr:       u.stopErr,
-		doneErr:       u.doneErr,
-		doneErrOnStop: u.doneErrOnStop,
-		leaveDoneOpen: u.leaveDoneOpen,
+		name:              name,
+		events:            u.events,
+		env:               env,
+		done:              make(chan error, 1),
+		stopErr:           u.stopErr,
+		doneErr:           u.doneErr,
+		doneErrOnStop:     u.doneErrOnStop,
+		leaveDoneOpen:     u.leaveDoneOpen,
+		failIfStopCtxDone: u.failIfStopCtxDone,
 	}
 	if u.doneErr != nil && !u.doneErrOnStop {
 		delay := u.doneDelay
@@ -1351,21 +1430,25 @@ func (u backgroundProbeUnit) Start(_ context.Context, env contract.RunEnv) (cont
 }
 
 type backgroundProbeTask struct {
-	name          string
-	events        chan string
-	env           contract.RunEnv
-	done          chan error
-	doneMu        sync.Mutex
-	closed        bool
-	stopErr       error
-	doneErr       error
-	doneErrOnStop bool
-	leaveDoneOpen bool
+	name              string
+	events            chan string
+	env               contract.RunEnv
+	done              chan error
+	doneMu            sync.Mutex
+	closed            bool
+	stopErr           error
+	doneErr           error
+	doneErrOnStop     bool
+	leaveDoneOpen     bool
+	failIfStopCtxDone bool
 }
 
 func (t *backgroundProbeTask) Done() <-chan error { return t.done }
-func (t *backgroundProbeTask) Stop(context.Context) error {
+func (t *backgroundProbeTask) Stop(ctx context.Context) error {
 	t.events <- t.name + ":stop"
+	if t.failIfStopCtxDone && ctx.Err() != nil {
+		return fmt.Errorf("stop context canceled before publishing output: %w", ctx.Err())
+	}
 	t.env.EmitCounter("ticks_total", 1, nil)
 	if err := t.env.SetOutput("summary", backgroundProbeSummary{"stopped": true}); err != nil {
 		return err
@@ -1424,7 +1507,9 @@ func (u foregroundProbeUnit) Run(_ context.Context, env contract.RunEnv) error {
 	return nil
 }
 
-type cancelAwareForegroundUnit struct{}
+type cancelAwareForegroundUnit struct {
+	afterCancelDelay time.Duration
+}
 
 func (cancelAwareForegroundUnit) Definition() contract.Definition {
 	return contract.Definition{Kind: "test.cancel_aware_foreground/v1"}
@@ -1433,8 +1518,11 @@ func (cancelAwareForegroundUnit) Validate(context.Context, contract.ValidateEnv)
 func (cancelAwareForegroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
 	return contract.Plan{}, nil
 }
-func (cancelAwareForegroundUnit) Run(ctx context.Context, _ contract.RunEnv) error {
+func (u cancelAwareForegroundUnit) Run(ctx context.Context, _ contract.RunEnv) error {
 	<-ctx.Done()
+	if u.afterCancelDelay > 0 {
+		time.Sleep(u.afterCancelDelay)
+	}
 	return ctx.Err()
 }
 
