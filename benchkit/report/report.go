@@ -100,9 +100,9 @@ func formatMetric(name string, metric kernel.MetricResult) string {
 			"  - metric `%s` `duration`: count `%d`, avg `%s`, min `%s`, max `%s`\n",
 			name,
 			metric.Count,
-			formatSeconds(avg),
-			formatSeconds(metric.Min),
-			formatSeconds(metric.Max),
+			formatMilliseconds(avg),
+			formatMilliseconds(metric.Min),
+			formatMilliseconds(metric.Max),
 		)
 	default:
 		metricType := metric.Type
@@ -123,8 +123,8 @@ func formatNumber(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
-func formatSeconds(value float64) string {
-	return fmt.Sprintf("%.4fs", value)
+func formatMilliseconds(value float64) string {
+	return fmt.Sprintf("%.2fms", value*1000)
 }
 
 func formatCleanup(cleanup kernel.CleanupResult) string {

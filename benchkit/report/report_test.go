@@ -110,7 +110,7 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 	markdown := string(markdownData)
 	for _, want := range []string{
 		"metric `send_attempt_total` `counter`: count `2`, sum `3`",
-		"metric `sendack_latency` `duration`: count `2`, avg `0.0015s`, min `0.0010s`, max `0.0020s`",
+		"metric `sendack_latency` `duration`: count `2`, avg `1.50ms`, min `1.00ms`, max `2.00ms`",
 	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("summary.md missing %q:\n%s", want, markdown)
