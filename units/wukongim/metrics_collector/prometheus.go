@@ -86,19 +86,51 @@ func (f metricFilter) match(name string) bool {
 }
 
 func parsePrometheusLine(line string) (metricSample, bool) {
-	fields := strings.Fields(line)
-	if len(fields) < 2 {
+	expr, rawValue, ok := splitSampleLine(line)
+	if !ok {
 		return metricSample{}, false
 	}
-	value, err := strconv.ParseFloat(fields[1], 64)
+	value, err := strconv.ParseFloat(rawValue, 64)
 	if err != nil {
 		return metricSample{}, false
 	}
-	name, labels, ok := parseMetricExpr(fields[0])
+	name, labels, ok := parseMetricExpr(expr)
 	if !ok || name == "" {
 		return metricSample{}, false
 	}
 	return metricSample{Name: name, Labels: labels, Value: value}, true
+}
+
+func splitSampleLine(line string) (string, string, bool) {
+	inQuote := false
+	escaped := false
+	for index, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inQuote && r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && isASCIIWhitespace(r) {
+			expr := strings.TrimSpace(line[:index])
+			rest := strings.TrimSpace(line[index:])
+			if expr == "" || rest == "" {
+				return "", "", false
+			}
+			fields := strings.Fields(rest)
+			if len(fields) == 0 {
+				return "", "", false
+			}
+			return expr, fields[0], true
+		}
+	}
+	return "", "", false
 }
 
 func parseMetricExpr(expr string) (string, map[string]string, bool) {
@@ -107,12 +139,18 @@ func parseMetricExpr(expr string) (string, map[string]string, bool) {
 		if strings.Contains(expr, "}") {
 			return "", nil, false
 		}
+		if !isPrometheusMetricName(expr) {
+			return "", nil, false
+		}
 		return expr, map[string]string{}, true
 	}
 	if !strings.HasSuffix(expr, "}") {
 		return "", nil, false
 	}
 	name := expr[:open]
+	if !isPrometheusMetricName(name) {
+		return "", nil, false
+	}
 	rawLabels := expr[open+1 : len(expr)-1]
 	labels, ok := parseLabels(rawLabels)
 	if !ok {
@@ -127,7 +165,11 @@ func parseLabels(raw string) (map[string]string, bool) {
 	if raw == "" {
 		return labels, true
 	}
-	for _, part := range strings.Split(raw, ",") {
+	parts, ok := splitLabelPairs(raw)
+	if !ok {
+		return nil, false
+	}
+	for _, part := range parts {
 		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {
 			return nil, false
@@ -137,9 +179,69 @@ func parseLabels(raw string) (map[string]string, bool) {
 		if !isPrometheusLabelKey(key) || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
 			return nil, false
 		}
-		labels[key] = strings.Trim(value[1:len(value)-1], " ")
+		unquoted, err := strconv.Unquote(value)
+		if err != nil {
+			return nil, false
+		}
+		labels[key] = unquoted
 	}
 	return labels, true
+}
+
+func splitLabelPairs(raw string) ([]string, bool) {
+	var pairs []string
+	start := 0
+	inQuote := false
+	escaped := false
+	for index, r := range raw {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inQuote && r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && r == ',' {
+			pair := strings.TrimSpace(raw[start:index])
+			if pair == "" {
+				return nil, false
+			}
+			pairs = append(pairs, pair)
+			start = index + len(string(r))
+		}
+	}
+	if inQuote || escaped {
+		return nil, false
+	}
+	pair := strings.TrimSpace(raw[start:])
+	if pair == "" {
+		return nil, false
+	}
+	pairs = append(pairs, pair)
+	return pairs, true
+}
+
+func isPrometheusMetricName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for index, r := range name {
+		if index == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' || r == ':') {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == ':') {
+			return false
+		}
+	}
+	return true
 }
 
 func isPrometheusLabelKey(key string) bool {
@@ -158,4 +260,8 @@ func isPrometheusLabelKey(key string) bool {
 		}
 	}
 	return true
+}
+
+func isASCIIWhitespace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
 }

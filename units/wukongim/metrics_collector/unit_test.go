@@ -158,6 +158,29 @@ wk_extra_brace{{node="1"} 11
 	}
 }
 
+func TestParsePrometheusTextParsesQuotedLabelValuesWithSpacesCommasAndEscapes(t *testing.T) {
+	samples, parseErrors := parsePrometheusText([]byte(`
+wk_space_label{label="a b"} 1
+wk_comma_label{label="a,b"} 2
+wk_escape_label{label="a\"b",path="c\\d"} 3
+`), metricFilter{})
+	if parseErrors != 0 {
+		t.Fatalf("parse errors = %d, want 0", parseErrors)
+	}
+	if len(samples) != 3 {
+		t.Fatalf("samples = %#v, want 3", samples)
+	}
+	if samples[0].Name != "wk_space_label" || samples[0].Labels["label"] != "a b" || samples[0].Value != 1 {
+		t.Fatalf("space label sample = %#v", samples[0])
+	}
+	if samples[1].Name != "wk_comma_label" || samples[1].Labels["label"] != "a,b" || samples[1].Value != 2 {
+		t.Fatalf("comma label sample = %#v", samples[1])
+	}
+	if samples[2].Name != "wk_escape_label" || samples[2].Labels["label"] != `a"b` || samples[2].Labels["path"] != `c\d` || samples[2].Value != 3 {
+		t.Fatalf("escaped label sample = %#v", samples[2])
+	}
+}
+
 func TestNewMetricFilterReportsRegexSide(t *testing.T) {
 	_, err := newMetricFilter(collectorSpec{Include: []string{"["}})
 	if err == nil || !strings.Contains(err.Error(), "include") {
