@@ -567,6 +567,89 @@ func TestEngineRecordsBackgroundDoneFatalDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestEngineDoesNotHangWhenBackgroundDoneStaysOpenAfterStop(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events, leaveDoneOpen: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan struct {
+		result kernel.Result
+		err    error
+	}, 1)
+	go func() {
+		result, err := kernel.New(reg).Run(ctx, dsl.Scenario{
+			Version: "wkbench/v2",
+			Run:     dsl.RunConfig{ID: "background-done-left-open"},
+			Units: map[string]dsl.UnitNode{
+				"metrics": {Use: "test.background_probe/v1"},
+			},
+		})
+		done <- struct {
+			result kernel.Result
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case out := <-done:
+		if out.err == nil {
+			t.Fatal("expected background shutdown error")
+		}
+		if !strings.Contains(out.err.Error(), `unit "metrics" background`) || !strings.Contains(out.err.Error(), "done did not complete") {
+			t.Fatalf("error = %q, want bounded done wait error", out.err.Error())
+		}
+		if out.result.Status != kernel.StatusWorkerFailed {
+			t.Fatalf("unexpected status %s", out.result.Status)
+		}
+		background := out.result.Units["metrics"]
+		if background.Status != kernel.StatusWorkerFailed || !strings.Contains(background.Error, "done did not complete") {
+			t.Fatalf("unexpected background unit: %#v", background)
+		}
+		assertUnitTimeline(t, background)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("engine hung waiting for background Done after Stop")
+	}
+}
+
+func TestEngineReportsBackgroundDoneFatalAndStopErrorDuringShutdown(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{
+		events:        events,
+		doneErr:       fmt.Errorf("scrape failed"),
+		doneErrOnStop: true,
+		stopErr:       fmt.Errorf("stop failed"),
+	})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background-done-fatal-and-stop-error"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected background fatal and stop errors")
+	}
+	errorText := err.Error()
+	if !strings.Contains(errorText, `unit "metrics" background`) || !strings.Contains(errorText, "scrape failed") ||
+		!strings.Contains(errorText, `unit "metrics" stop`) || !strings.Contains(errorText, "stop failed") {
+		t.Fatalf("error = %q, want background fatal and stop errors", errorText)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	background := result.Units["metrics"]
+	if background.Status != kernel.StatusWorkerFailed ||
+		!strings.Contains(background.Error, "scrape failed") ||
+		!strings.Contains(background.Error, "stop failed") {
+		t.Fatalf("unexpected background unit: %#v", background)
+	}
+	assertUnitTimeline(t, background)
+}
+
 func TestEngineStopsBackgroundWhenForegroundFails(t *testing.T) {
 	events := make(chan string, 8)
 	reg := registry.New()
@@ -1214,6 +1297,7 @@ type backgroundProbeUnit struct {
 	stopErr       error
 	doneErr       error
 	doneErrOnStop bool
+	leaveDoneOpen bool
 	doneDelay     time.Duration
 }
 
@@ -1246,7 +1330,16 @@ func (u backgroundProbeUnit) Start(_ context.Context, env contract.RunEnv) (cont
 	if u.nilTask {
 		return nil, nil
 	}
-	task := &backgroundProbeTask{name: name, events: u.events, env: env, done: make(chan error, 1), stopErr: u.stopErr, doneErr: u.doneErr, doneErrOnStop: u.doneErrOnStop}
+	task := &backgroundProbeTask{
+		name:          name,
+		events:        u.events,
+		env:           env,
+		done:          make(chan error, 1),
+		stopErr:       u.stopErr,
+		doneErr:       u.doneErr,
+		doneErrOnStop: u.doneErrOnStop,
+		leaveDoneOpen: u.leaveDoneOpen,
+	}
 	if u.doneErr != nil && !u.doneErrOnStop {
 		delay := u.doneDelay
 		go func() {
@@ -1267,6 +1360,7 @@ type backgroundProbeTask struct {
 	stopErr       error
 	doneErr       error
 	doneErrOnStop bool
+	leaveDoneOpen bool
 }
 
 func (t *backgroundProbeTask) Done() <-chan error { return t.done }
@@ -1278,6 +1372,9 @@ func (t *backgroundProbeTask) Stop(context.Context) error {
 	}
 	if t.doneErrOnStop {
 		t.finishDone(t.doneErr)
+		return t.stopErr
+	}
+	if t.leaveDoneOpen {
 		return t.stopErr
 	}
 	t.closeDone()

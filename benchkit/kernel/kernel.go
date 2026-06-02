@@ -31,6 +31,8 @@ const (
 	StatusWorkerFailed Status = "worker_failed"
 )
 
+const backgroundDoneShutdownWait = 100 * time.Millisecond
+
 // Engine validates, plans, and executes scenario graphs.
 type Engine struct {
 	reg *registry.Registry
@@ -363,14 +365,20 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			}
 			bg := activeBackground{name: name, node: node, env: env, task: task, startedAt: start}
 			if done := task.Done(); done != nil {
+				bg.monitorStop = make(chan struct{})
 				bg.monitorDone = make(chan struct{})
-				go func(unitName string, errCh <-chan error, doneCh chan<- struct{}) {
+				go func(unitName string, errCh <-chan error, stopCh <-chan struct{}, doneCh chan<- struct{}) {
 					defer close(doneCh)
-					if err, ok := <-errCh; ok && err != nil {
+					select {
+					case err, ok := <-errCh:
+						if !ok || err == nil {
+							return
+						}
 						backgroundErrors <- backgroundError{unit: unitName, err: err}
 						cancel()
+					case <-stopCh:
 					}
-				}(name, done, bg.monitorDone)
+				}(name, done, bg.monitorStop, bg.monitorDone)
 			}
 			active = append(active, bg)
 			continue
@@ -450,15 +458,13 @@ func stopBackgroundsAfterEarlyFailure(ctx context.Context, active []activeBackgr
 }
 
 func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult, fatalBackgrounds map[string]error, drainBackgroundErrors func() (backgroundError, bool)) error {
-	var firstErr error
+	var shutdownErr error
 	rememberBackgroundErr := func(failed backgroundError) {
 		if failed.err == nil {
 			return
 		}
 		recordBackgroundError(fatalBackgrounds, failed)
-		if firstErr == nil {
-			firstErr = backgroundFailureError(failed)
-		}
+		shutdownErr = errors.Join(shutdownErr, backgroundFailureError(failed))
 	}
 	drain := func() {
 		if drainBackgroundErrors == nil {
@@ -473,7 +479,9 @@ func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *ou
 		bg := active[i]
 		drain()
 		err := bg.task.Stop(ctx)
-		waitBackgroundMonitor(bg)
+		if waitErr := waitBackgroundMonitor(ctx, bg); waitErr != nil {
+			rememberBackgroundErr(backgroundError{unit: bg.name, err: waitErr})
+		}
 		drain()
 		end := time.Now()
 		startedAt, endedAt, elapsedMS := timelineFields(bg.startedAt, end)
@@ -491,9 +499,7 @@ func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *ou
 			} else {
 				errorText = err.Error()
 			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf("unit %q stop: %w", bg.name, err)
-			}
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("unit %q stop: %w", bg.name, err))
 		}
 		results[bg.name] = UnitResult{
 			Kind:      bg.node.def.Kind,
@@ -507,7 +513,7 @@ func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *ou
 		}
 	}
 	drain()
-	return firstErr
+	return shutdownErr
 }
 
 func recordBackgroundError(fatalBackgrounds map[string]error, failed backgroundError) {
@@ -523,10 +529,53 @@ func backgroundFailureError(failed backgroundError) error {
 	return fmt.Errorf("unit %q background: %w", failed.unit, failed.err)
 }
 
-func waitBackgroundMonitor(bg activeBackground) {
-	if bg.monitorDone != nil {
-		<-bg.monitorDone
+func waitBackgroundMonitor(ctx context.Context, bg activeBackground) error {
+	if bg.monitorDone == nil {
+		return nil
 	}
+	select {
+	case <-bg.monitorDone:
+		return nil
+	default:
+	}
+	wait := backgroundDoneShutdownWait
+	var ctxDone <-chan struct{}
+	if ctx != nil && ctx.Err() == nil {
+		ctxDone = ctx.Done()
+		if deadline, ok := ctx.Deadline(); ok {
+			if until := time.Until(deadline); until > 0 && until < wait {
+				wait = until
+			}
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-bg.monitorDone:
+		return nil
+	case <-ctxDone:
+		select {
+		case <-bg.monitorDone:
+			return nil
+		default:
+		}
+		stopBackgroundMonitor(bg)
+		return fmt.Errorf("done did not complete: %w", ctx.Err())
+	case <-timer.C:
+		stopBackgroundMonitor(bg)
+		if ctx != nil && ctx.Err() != nil {
+			return fmt.Errorf("done did not complete: %w", ctx.Err())
+		}
+		return fmt.Errorf("done did not complete within %s", wait)
+	}
+}
+
+func stopBackgroundMonitor(bg activeBackground) {
+	if bg.monitorStop == nil {
+		return
+	}
+	close(bg.monitorStop)
+	<-bg.monitorDone
 }
 
 func graphWiring(graph *graph) []ExplainBinding {
@@ -589,6 +638,7 @@ type activeBackground struct {
 	env         *runEnv
 	task        contract.BackgroundTask
 	startedAt   time.Time
+	monitorStop chan struct{}
 	monitorDone chan struct{}
 }
 
