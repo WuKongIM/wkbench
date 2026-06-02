@@ -8,6 +8,7 @@ import (
 
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	trafficport "github.com/WuKongIM/wkbench/benchkit/ports/traffic"
+	wukongimport "github.com/WuKongIM/wkbench/benchkit/ports/wukongim"
 	"github.com/WuKongIM/wkbench/benchkit/report"
 )
 
@@ -99,6 +100,54 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{"sendack_ok: `9`", "sendack_errors: `1`", "sendack_error_rate: `0.1000`", "elapsed_ms: `2000`", "actual_qps: `4.50`"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary.md missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestWriteDirIncludesWuKongIMMetricsSummary(t *testing.T) {
+	dir := t.TempDir()
+	result := kernel.Result{
+		RunID:  "demo",
+		Status: kernel.StatusCompleted,
+		Units: map[string]kernel.UnitResult{
+			"metrics": {
+				Kind:   "wukongim.metrics/v1",
+				Status: kernel.StatusCompleted,
+				Outputs: map[string]kernel.OutputResult{
+					"summary": {
+						Type: wukongimport.MetricsSummaryV1,
+						Value: wukongimport.MetricsSummary{
+							ScrapeTicks:     7,
+							SelectedSamples: 123,
+							Nodes: []wukongimport.NodeScrapeSummary{
+								{Address: "127.0.0.1:5300", Success: 6, Errors: 2},
+								{Address: "127.0.0.2:5300", Success: 5, Errors: 3},
+							},
+							LatencyP95MS: 8.12,
+							LatencyP99MS: 10.34,
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := report.WriteDir(dir, result); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"scrapes: `7`",
+		"errors: `5`",
+		"samples: `123`",
+		"latency_p95: `8.12ms`",
+		"latency_p99: `10.34ms`",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("summary.md missing %q:\n%s", want, text)
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	trafficport "github.com/WuKongIM/wkbench/benchkit/ports/traffic"
+	wukongimport "github.com/WuKongIM/wkbench/benchkit/ports/wukongim"
 )
 
 // WriteDir writes a compact JSON and Markdown report directory.
@@ -91,6 +92,12 @@ func formatOutputValue(value any) string {
 	switch v := value.(type) {
 	case trafficport.Summary:
 		return fmt.Sprintf("sendack_ok: `%d`, sendack_errors: `%d`, sendack_error_rate: `%.4f`, elapsed_ms: `%d`, actual_qps: `%.2f`, last_message_id: `%d`", v.SendackOK, v.SendackErrors, v.SendackErrorRate(), v.ElapsedMS, v.ActualQPS(), v.LastMessageID)
+	case wukongimport.MetricsSummary:
+		var errors int64
+		for _, node := range v.Nodes {
+			errors += node.Errors
+		}
+		return fmt.Sprintf("scrapes: `%d`, errors: `%d`, samples: `%d`, latency_p95: `%.2fms`, latency_p99: `%.2fms`", v.ScrapeTicks, errors, v.SelectedSamples, v.LatencyP95MS, v.LatencyP99MS)
 	default:
 		data, err := json.Marshal(value)
 		if err != nil {
