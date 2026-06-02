@@ -207,6 +207,77 @@ func TestSendRateSweepDryRunDoesNotRequireJQ(t *testing.T) {
 	}
 }
 
+func TestSendRateSweepDryRunRendersMetricsCollector(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir, _ := runSweepDryRun(t,
+		"--mode", "person",
+		"--collect-metrics",
+		"--metrics-interval", "2s",
+		"--metrics-include", " wk_.* , wukongim_.* ,, custom_.* ",
+		"--metrics-exclude", " go_.* , process_.* ",
+	)
+	data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "scenario.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"  metrics:\n    use: wukongim.metrics_collector",
+		"    after: [target]",
+		"      target: target.target",
+		"      interval: 2s",
+		"      timeout: 5s",
+		"      path: /metrics",
+		"      fail_on_scrape_error: false",
+		`        - "wk_.*"`,
+		`        - "wukongim_.*"`,
+		`        - "custom_.*"`,
+		`        - "go_.*"`,
+		`        - "process_.*"`,
+		"  identities:\n    use: identity.pool\n    after: [metrics]",
+		"  person_traffic:\n    use: traffic.send\n    after: [metrics]",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics dry-run scenario missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestSendRateSweepMixedDryRunRendersCollectorPerSubScenario(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir, _ := runSweepDryRun(t,
+		"--mode", "mixed",
+		"--collect-metrics",
+	)
+	for _, scenario := range []string{
+		filepath.Join(outDir, "steps", "0001-100qps", "group", "scenario.yaml"),
+		filepath.Join(outDir, "steps", "0001-100qps", "person", "scenario.yaml"),
+	} {
+		data, err := os.ReadFile(scenario)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"  metrics:\n    use: wukongim.metrics_collector",
+			"      interval: 1s",
+			`        - "wk_.*"`,
+			`        - "wukongim_.*"`,
+			`        - "go_.*"`,
+			`        - "process_.*"`,
+			"    after: [metrics]",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("mixed sub-scenario %s missing %q:\n%s", scenario, want, text)
+			}
+		}
+	}
+}
+
 func linkPathTools(t *testing.T, dir string, tools ...string) {
 	t.Helper()
 	for _, tool := range tools {

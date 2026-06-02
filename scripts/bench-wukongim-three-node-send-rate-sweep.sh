@@ -21,6 +21,10 @@ CLEAN_TARGET=0
 KEEP_TARGET=0
 DRY_RUN=0
 TARGET_PID=""
+COLLECT_METRICS=0
+METRICS_INTERVAL="1s"
+METRICS_INCLUDE="wk_.*,wukongim_.*"
+METRICS_EXCLUDE="go_.*,process_.*"
 
 usage() {
   cat <<'USAGE'
@@ -48,6 +52,10 @@ Options:
   --clean-target
   --keep-target
   --dry-run
+  --collect-metrics
+  --metrics-interval D
+  --metrics-include REGEX_LIST
+  --metrics-exclude REGEX_LIST
   -h, --help
 USAGE
 }
@@ -142,6 +150,44 @@ max_in_flight_for_rate() {
   printf '%d\n' "$raw"
 }
 
+trim_space() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+yaml_double_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+render_csv_list_field() {
+  local name="$1"
+  local csv="$2"
+  local raw item
+  local -a entries=()
+  local -a items=()
+  IFS=',' read -r -a entries <<< "$csv"
+  for raw in "${entries[@]}"; do
+    item="$(trim_space "$raw")"
+    [[ -n "$item" ]] || continue
+    items+=("$item")
+  done
+  if [[ "${#items[@]}" -eq 0 ]]; then
+    printf '      %s: []\n' "$name"
+    return
+  fi
+  printf '      %s:\n' "$name"
+  for item in "${items[@]}"; do
+    printf '        - '
+    yaml_double_quote "$item"
+    printf '\n'
+  done
+}
+
 split_rates() {
   local total="$1"
   local person_weight group_weight weight_sum person_rate group_rate
@@ -204,8 +250,36 @@ units:
       bench_api_token: ""
       operation_timeout: 5s
 
+YAML
+  if [[ "$COLLECT_METRICS" -eq 1 ]]; then
+    cat <<YAML
+  metrics:
+    use: wukongim.metrics_collector
+    after: [target]
+    inputs:
+      target: target.target
+    spec:
+      interval: $METRICS_INTERVAL
+      timeout: 5s
+      path: /metrics
+YAML
+    render_csv_list_field include "$METRICS_INCLUDE"
+    render_csv_list_field exclude "$METRICS_EXCLUDE"
+    cat <<YAML
+      fail_on_scrape_error: false
+
+YAML
+  fi
+  cat <<YAML
   identities:
     use: identity.pool
+YAML
+  if [[ "$COLLECT_METRICS" -eq 1 ]]; then
+    cat <<YAML
+    after: [metrics]
+YAML
+  fi
+  cat <<YAML
     spec:
       total: $USERS
       uid_prefix: sweep-$identity_prefix-u
@@ -277,6 +351,13 @@ render_person_traffic() {
   cat <<YAML
   person_traffic:
     use: traffic.send
+YAML
+  if [[ "$COLLECT_METRICS" -eq 1 ]]; then
+    cat <<YAML
+    after: [metrics]
+YAML
+  fi
+  cat <<YAML
     inputs:
       targets: pairs.targets
       sender: sessions.message_sender
@@ -307,6 +388,13 @@ render_group_traffic() {
   cat <<YAML
   group_traffic:
     use: traffic.send
+YAML
+  if [[ "$COLLECT_METRICS" -eq 1 ]]; then
+    cat <<YAML
+    after: [metrics]
+YAML
+  fi
+  cat <<YAML
     inputs:
       targets: groups.targets
       sender: sessions.message_sender
@@ -751,6 +839,25 @@ while [[ $# -gt 0 ]]; do
     --dry-run)
       DRY_RUN=1
       shift
+      ;;
+    --collect-metrics)
+      COLLECT_METRICS=1
+      shift
+      ;;
+    --metrics-interval)
+      [[ $# -ge 2 ]] || die "--metrics-interval requires a value"
+      METRICS_INTERVAL="$2"
+      shift 2
+      ;;
+    --metrics-include)
+      [[ $# -ge 2 ]] || die "--metrics-include requires a value"
+      METRICS_INCLUDE="$2"
+      shift 2
+      ;;
+    --metrics-exclude)
+      [[ $# -ge 2 ]] || die "--metrics-exclude requires a value"
+      METRICS_EXCLUDE="$2"
+      shift 2
       ;;
     -h|--help)
       usage
