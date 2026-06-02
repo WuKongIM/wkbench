@@ -80,7 +80,7 @@ func TestThreeNodeStartupScriptUsesSiblingWuKongIMRoot(t *testing.T) {
 		t.Fatalf("dry-run failed: %v\n%s", err, out)
 	}
 	text := string(out)
-	wukongRoot := filepath.Clean(filepath.Join(root, "..", "WuKongIM"))
+	wukongRoot := expectedWuKongIMRoot(t, root)
 	for _, want := range []string{
 		"repo_root=" + wukongRoot,
 		"runtime_root=" + root,
@@ -99,6 +99,22 @@ func TestThreeNodeStartupScriptUsesSiblingWuKongIMRoot(t *testing.T) {
 	if !strings.Contains(string(data), `GOWORK="${GOWORK:-off}" go build`) {
 		t.Fatalf("script should build WuKongIM with GOWORK defaulting to off")
 	}
+}
+
+func expectedWuKongIMRoot(t *testing.T, root string) string {
+	t.Helper()
+	for _, candidate := range []string{
+		filepath.Join(root, "..", "WuKongIM"),
+		filepath.Join(root, "..", "..", "..", "WuKongIM"),
+		filepath.Join(root, ".."),
+	} {
+		candidate = filepath.Clean(candidate)
+		if _, err := os.Stat(filepath.Join(candidate, "cmd", "wukongimv2")); err == nil {
+			return candidate
+		}
+	}
+	t.Fatalf("cannot find expected WuKongIM root near %s", root)
+	return ""
 }
 
 func scriptPath(t *testing.T) string {

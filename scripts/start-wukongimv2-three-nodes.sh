@@ -11,6 +11,7 @@ detect_wukongim_root() {
   fi
   candidates+=(
     "$WKBENCH_ROOT/../WuKongIM"
+    "$WKBENCH_ROOT/../../../WuKongIM"
     "$WKBENCH_ROOT/.."
   )
   local candidate
