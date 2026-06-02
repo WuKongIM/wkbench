@@ -656,9 +656,11 @@ done
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   write_summary_markdown "not-run" "$highest_passing_qps" "$first_failing_qps"
+  rm -f "$SUMMARY_ROWS"
   log "dry-run wrote $OUT_DIR"
   exit 0
 fi
 
 write_summary_markdown "$sweep_status" "$highest_passing_qps" "$first_failing_qps"
+rm -f "$SUMMARY_ROWS"
 log "sweep completed at $OUT_DIR"
