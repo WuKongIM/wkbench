@@ -49,6 +49,7 @@ func TestValidateRejectsInvalidSpec(t *testing.T) {
 		{name: "include regex", spec: map[string]any{"include": []string{"["}}, want: "include"},
 		{name: "exclude regex", spec: map[string]any{"exclude": []string{"["}}, want: "exclude"},
 		{name: "max consecutive errors", spec: map[string]any{"max_consecutive_errors": -1}, want: "max_consecutive_errors"},
+		{name: "max summary metrics", spec: map[string]any{"max_summary_metrics": -1}, want: "max_summary_metrics"},
 	}
 
 	for _, tt := range tests {
@@ -143,9 +144,10 @@ wk_empty_label{="missing"} 8
 wk_unquoted_label{node=1} 9
 wk_invalid_label_key{bad-label="1"} 10
 wk_extra_brace{{node="1"} 11
+wk_duplicate_label{node="1",node="2"} 12
 `), metricFilter{})
-	if parseErrors != 7 {
-		t.Fatalf("parse errors = %d, want 7", parseErrors)
+	if parseErrors != 8 {
+		t.Fatalf("parse errors = %d, want 8", parseErrors)
 	}
 	if len(samples) != 2 {
 		t.Fatalf("samples = %#v, want 2", samples)
@@ -178,6 +180,43 @@ wk_escape_label{label="a\"b",path="c\\d"} 3
 	}
 	if samples[2].Name != "wk_escape_label" || samples[2].Labels["label"] != `a"b` || samples[2].Labels["path"] != `c\d` || samples[2].Value != 3 {
 		t.Fatalf("escaped label sample = %#v", samples[2])
+	}
+}
+
+func TestParsePrometheusTextRejectsNonFiniteValues(t *testing.T) {
+	samples, parseErrors := parsePrometheusText([]byte(`
+wk_nan NaN
+wk_pos_inf +Inf
+wk_neg_inf -Inf
+wk_finite 1.5
+`), metricFilter{})
+	if parseErrors != 3 {
+		t.Fatalf("parse errors = %d, want 3", parseErrors)
+	}
+	if len(samples) != 1 || samples[0].Name != "wk_finite" || samples[0].Value != 1.5 {
+		t.Fatalf("samples = %#v, want only finite sample", samples)
+	}
+}
+
+func TestParsePrometheusTextValidatesTrailingTokens(t *testing.T) {
+	samples, parseErrors := parsePrometheusText([]byte(`
+wk_no_timestamp 1
+wk_with_timestamp 2 123
+wk_extra_token 3 garbage
+wk_too_many_tokens 4 123 bad
+wk_bad_timestamp 5 not-an-int
+`), metricFilter{})
+	if parseErrors != 3 {
+		t.Fatalf("parse errors = %d, want 3", parseErrors)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("samples = %#v, want 2", samples)
+	}
+	if samples[0].Name != "wk_no_timestamp" || samples[0].Value != 1 {
+		t.Fatalf("first sample = %#v", samples[0])
+	}
+	if samples[1].Name != "wk_with_timestamp" || samples[1].Value != 2 {
+		t.Fatalf("second sample = %#v", samples[1])
 	}
 }
 

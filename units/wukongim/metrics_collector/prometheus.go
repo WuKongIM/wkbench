@@ -2,6 +2,7 @@ package metrics_collector
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -94,6 +95,9 @@ func parsePrometheusLine(line string) (metricSample, bool) {
 	if err != nil {
 		return metricSample{}, false
 	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return metricSample{}, false
+	}
 	name, labels, ok := parseMetricExpr(expr)
 	if !ok || name == "" {
 		return metricSample{}, false
@@ -124,8 +128,13 @@ func splitSampleLine(line string) (string, string, bool) {
 				return "", "", false
 			}
 			fields := strings.Fields(rest)
-			if len(fields) == 0 {
+			if len(fields) == 0 || len(fields) > 2 {
 				return "", "", false
+			}
+			if len(fields) == 2 {
+				if _, err := strconv.ParseInt(fields[1], 10, 64); err != nil {
+					return "", "", false
+				}
 			}
 			return expr, fields[0], true
 		}
@@ -177,6 +186,9 @@ func parseLabels(raw string) (map[string]string, bool) {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if !isPrometheusLabelKey(key) || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+			return nil, false
+		}
+		if _, exists := labels[key]; exists {
 			return nil, false
 		}
 		unquoted, err := strconv.Unquote(value)

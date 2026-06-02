@@ -95,6 +95,9 @@ func (Unit) Validate(ctx context.Context, env contract.ValidateEnv) error {
 	if spec.MaxConsecutiveErrors < 0 {
 		return fmt.Errorf("max_consecutive_errors must not be negative")
 	}
+	if spec.MaxSummaryMetrics < 0 {
+		return fmt.Errorf("max_summary_metrics must not be negative")
+	}
 	return nil
 }
 
@@ -129,7 +132,7 @@ func decodeSpec(env contract.ValidateEnv) (collectorSpec, error) {
 	spec.Path = strings.TrimSpace(spec.Path)
 	spec.Include = trimStrings(spec.Include)
 	spec.Exclude = trimStrings(spec.Exclude)
-	if spec.MaxSummaryMetrics <= 0 {
+	if spec.MaxSummaryMetrics == 0 {
 		spec.MaxSummaryMetrics = defaultMaxSummaryMetrics
 	}
 	return spec, nil
