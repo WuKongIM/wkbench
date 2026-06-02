@@ -271,6 +271,49 @@ func TestSendRateSweepDryRunCapsMaxInFlight(t *testing.T) {
 	}
 }
 
+func TestSendRateSweepDryRunHonorsGroupCount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir, _ := runSweepDryRun(t,
+		"--mode", "group",
+		"--groups", "7",
+	)
+	data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "scenario.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "count: 7") {
+		t.Fatalf("scenario should honor --groups 7:\n%s", data)
+	}
+}
+
+func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	data, err := os.ReadFile(sweepScriptPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`.units[$unit].outputs.summary.value.sendack_ok`,
+		`.units[$unit].outputs.summary.value.sendack_errors`,
+		`.units[$unit].metrics.sendack_latency.sum`,
+		`.units[$unit].metrics.sendack_latency.min`,
+		`.units[$unit].metrics.sendack_latency.max`,
+		`avg_ms`,
+		`summary.csv`,
+		`highest_passing_qps`,
+		`first_failing_qps`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("sweep script missing result extraction fragment %q", want)
+		}
+	}
+}
+
 func sweepScriptPath(t *testing.T) string {
 	t.Helper()
 	root := filepath.Dir(filepath.Dir(scriptPath(t)))

@@ -6,7 +6,7 @@ MODE="mixed"
 RATES="10,20"
 DURATION="10s"
 USERS=100
-GROUPS=10
+GROUP_COUNT=10
 MEMBERS=10
 PERSON_PAIRS=50
 MIXED_RATIO="80:20"
@@ -89,6 +89,44 @@ run_step() {
   ) > "$console" 2>&1
 }
 
+check_ready() {
+  local api
+  for api in http://127.0.0.1:5011 http://127.0.0.1:5012 http://127.0.0.1:5013; do
+    curl -fsS --max-time 3 "$api/readyz" >/dev/null 2>&1 || return 1
+  done
+}
+
+start_target_if_needed() {
+  if [[ "$START_TARGET" -eq 0 ]]; then
+    return
+  fi
+  local args=()
+  if [[ "$CLEAN_TARGET" -eq 1 ]]; then
+    args+=(--clean)
+  fi
+  "$ROOT/scripts/start-wukongimv2-three-nodes.sh" "${args[@]}" > "$OUT_DIR/target-console.txt" 2>&1 &
+  TARGET_PID="$!"
+  local deadline=$((SECONDS + 90))
+  until check_ready; do
+    if ! kill -0 "$TARGET_PID" 2>/dev/null; then
+      cat "$OUT_DIR/target-console.txt" >&2 2>/dev/null || true
+      die "local three-node target exited before readiness"
+    fi
+    if (( SECONDS > deadline )); then
+      cat "$OUT_DIR/target-console.txt" >&2 2>/dev/null || true
+      die "timed out waiting for local three-node target"
+    fi
+    sleep 1
+  done
+}
+
+stop_target_if_needed() {
+  if [[ -n "$TARGET_PID" && "$KEEP_TARGET" -eq 0 ]]; then
+    kill "$TARGET_PID" 2>/dev/null || true
+    wait "$TARGET_PID" 2>/dev/null || true
+  fi
+}
+
 ceil_div() {
   local numerator="$1"
   local denominator="$2"
@@ -169,7 +207,7 @@ render_group_prep() {
     use: wukongim.prepare_group_channels
     spec:
       profile: sweep
-      count: $GROUPS
+      count: $GROUP_COUNT
       members_per_channel: $MEMBERS
       overlap: disallowed
       batch_size: 1000
@@ -304,6 +342,150 @@ render_scenario() {
   esac
 }
 
+offered_rates_for_mode() {
+  local total_rate="$1"
+  local person_rate group_rate
+  case "$MODE" in
+    person)
+      printf 'person_traffic:%s\n' "$total_rate"
+      ;;
+    group)
+      printf 'group_traffic:%s\n' "$total_rate"
+      ;;
+    mixed)
+      read -r person_rate group_rate < <(split_rates "$total_rate")
+      printf 'group_traffic:%s\n' "$group_rate"
+      printf 'person_traffic:%s\n' "$person_rate"
+      ;;
+  esac
+}
+
+extract_unit_row() {
+  local report="$1"
+  local unit="$2"
+  local mode="$3"
+  local total_qps="$4"
+  local offered_qps="$5"
+  local status="$6"
+  jq -r \
+    --arg unit "$unit" \
+    --arg mode "$mode" \
+    --arg total_qps "$total_qps" \
+    --arg offered_qps "$offered_qps" \
+    --arg status "$status" \
+    --arg report_dir "$(dirname "$report")" \
+    '
+    (.units[$unit].outputs.summary.value.sendack_ok // 0) as $ok
+    | (.units[$unit].outputs.summary.value.sendack_errors // 0) as $errors
+    | (($ok + $errors) | if . == 0 then 0 else ($errors / .) end) as $error_rate
+    | (.units[$unit].metrics.sendack_latency.count // 0) as $lat_count
+    | (.units[$unit].metrics.sendack_latency.sum // 0) as $lat_sum
+    | (.units[$unit].metrics.sendack_latency.min // 0) as $lat_min
+    | (.units[$unit].metrics.sendack_latency.max // 0) as $lat_max
+    | (if $lat_count == 0 then 0 else ($lat_sum / $lat_count * 1000) end) as $avg_ms
+    | [$mode, $total_qps, $unit, $offered_qps, $status, $ok, $errors, $error_rate, $avg_ms, ($lat_min * 1000), ($lat_max * 1000), $report_dir]
+    | @csv
+    ' "$report"
+}
+
+extract_unit_values() {
+  local report="$1"
+  local unit="$2"
+  jq -r \
+    --arg unit "$unit" \
+    '
+    (.units[$unit].outputs.summary.value.sendack_ok // 0) as $ok
+    | (.units[$unit].outputs.summary.value.sendack_errors // 0) as $errors
+    | (($ok + $errors) | if . == 0 then 0 else ($errors / .) end) as $error_rate
+    | (.units[$unit].metrics.sendack_latency.count // 0) as $lat_count
+    | (.units[$unit].metrics.sendack_latency.sum // 0) as $lat_sum
+    | (.units[$unit].metrics.sendack_latency.min // 0) as $lat_min
+    | (.units[$unit].metrics.sendack_latency.max // 0) as $lat_max
+    | (if $lat_count == 0 then 0 else ($lat_sum / $lat_count * 1000) end) as $avg_ms
+    | [$ok, $errors, $error_rate, $avg_ms, ($lat_min * 1000), ($lat_max * 1000)]
+    | @tsv
+    ' "$report"
+}
+
+append_missing_unit_result() {
+  local unit="$1"
+  local total_qps="$2"
+  local offered_qps="$3"
+  local status="$4"
+  local step_dir="$5"
+  printf '%s,%s,%s,%s,%s,0,0,0,0,0,0,%s\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
+}
+
+append_unit_result() {
+  local report="$1"
+  local unit="$2"
+  local total_qps="$3"
+  local offered_qps="$4"
+  local status="$5"
+  local step_dir="$6"
+  local values ok errors error_rate avg_ms min_ms max_ms
+
+  if [[ ! -f "$report" ]]; then
+    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "$status" "$step_dir"
+    return
+  fi
+
+  extract_unit_row "$report" "$unit" "$MODE" "$total_qps" "$offered_qps" "$status" >> "$OUT_DIR/summary.csv"
+  values="$(extract_unit_values "$report" "$unit" || true)"
+  if [[ -z "$values" ]]; then
+    values=$'0\t0\t0\t0\t0\t0'
+  fi
+  IFS=$'\t' read -r ok errors error_rate avg_ms min_ms max_ms <<< "$values"
+  printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `%.2fms` | `%.2fms` | `%.2fms` | `%s` |\n' \
+    "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$ok" "$errors" "$error_rate" "$avg_ms" "$min_ms" "$max_ms" "$step_dir" >> "$SUMMARY_ROWS"
+}
+
+append_step_results() {
+  local step_dir="$1"
+  local total_qps="$2"
+  local status="$3"
+  local report="$step_dir/report.json"
+  local pair unit offered_qps
+  while IFS= read -r pair; do
+    [[ -n "$pair" ]] || continue
+    unit="${pair%%:*}"
+    offered_qps="${pair##*:}"
+    append_unit_result "$report" "$unit" "$total_qps" "$offered_qps" "$status" "$step_dir"
+  done < <(offered_rates_for_mode "$total_qps")
+}
+
+append_not_run_results() {
+  local step_dir="$1"
+  local total_qps="$2"
+  local pair unit offered_qps
+  while IFS= read -r pair; do
+    [[ -n "$pair" ]] || continue
+    unit="${pair%%:*}"
+    offered_qps="${pair##*:}"
+    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "not-run" "$step_dir"
+  done < <(offered_rates_for_mode "$total_qps")
+}
+
+write_summary_markdown() {
+  local status="$1"
+  local highest_passing_qps="$2"
+  local first_failing_qps="$3"
+  {
+    printf '# send rate sweep\n\n'
+    printf -- '- mode: `%s`\n' "$MODE"
+    printf -- '- rates: `%s`\n' "$RATES"
+    printf -- '- status: `%s`\n' "$status"
+    printf -- '- highest_passing_qps: `%s`\n' "$highest_passing_qps"
+    printf -- '- first_failing_qps: `%s`\n\n' "$first_failing_qps"
+    printf '| mode | total_qps | workload | offered_qps | status | sendack_ok | sendack_errors | error_rate | latency_avg | latency_min | latency_max | report_dir |\n'
+    printf '| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n'
+    cat "$SUMMARY_ROWS"
+  } > "$OUT_DIR/summary.md"
+}
+
+trap stop_target_if_needed EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
@@ -328,7 +510,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --groups)
       [[ $# -ge 2 ]] || die "--groups requires a value"
-      GROUPS="$2"
+      GROUP_COUNT="$2"
       shift 2
       ;;
     --members)
@@ -413,7 +595,7 @@ case "$MODE" in
 esac
 [[ "$RATES" != "" ]] || die "--rates must not be empty"
 require_positive_uint "--users" "$USERS"
-require_positive_uint "--groups" "$GROUPS"
+require_positive_uint "--groups" "$GROUP_COUNT"
 require_positive_uint "--members" "$MEMBERS"
 require_positive_uint "--person-pairs" "$PERSON_PAIRS"
 require_uint "--payload-size" "$PAYLOAD_SIZE"
@@ -426,16 +608,20 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 fi
 
 mkdir -p "$OUT_DIR/steps"
-printf 'mode,total_qps,status,report_dir\n' > "$OUT_DIR/summary.csv"
-{
-  printf '# send rate sweep\n\n'
-  printf -- '- mode: `%s`\n' "$MODE"
-  printf -- '- rates: `%s`\n' "$RATES"
-  printf -- '- status: `not-run`\n'
-} > "$OUT_DIR/summary.md"
+SUMMARY_ROWS="$OUT_DIR/.summary-rows.md"
+: > "$SUMMARY_ROWS"
+printf 'mode,total_qps,workload,offered_qps,status,sendack_ok,sendack_errors,error_rate,latency_avg_ms,latency_min_ms,latency_max_ms,report_dir\n' > "$OUT_DIR/summary.csv"
 
 IFS=',' read -r -a RATE_VALUES <<< "$RATES"
 step_index=0
+highest_passing_qps="none"
+first_failing_qps="none"
+sweep_status="not-run"
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  start_target_if_needed
+fi
+
 for total_rate in "${RATE_VALUES[@]}"; do
   total_rate="${total_rate//[[:space:]]/}"
   require_positive_uint "--rates item" "$total_rate"
@@ -443,12 +629,36 @@ for total_rate in "${RATE_VALUES[@]}"; do
   step_dir="$(step_dir_for "$step_index" "$total_rate")"
   mkdir -p "$step_dir"
   render_scenario "$step_index" "$total_rate" "$step_dir" > "$step_dir/scenario.yaml"
-  printf '%s,%s,%s,%s\n' "$MODE" "$total_rate" "not-run" "$step_dir" >> "$OUT_DIR/summary.csv"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    append_not_run_results "$step_dir" "$total_rate"
+    continue
+  fi
+
+  step_status="passed"
+  if ! check_ready; then
+    step_status="failed"
+    printf 'target readiness check failed before step %s\n' "$total_rate" > "$step_dir/console.txt"
+  elif ! run_step "$step_dir"; then
+    step_status="failed"
+  fi
+
+  append_step_results "$step_dir" "$total_rate" "$step_status"
+  if [[ "$step_status" == "passed" ]]; then
+    highest_passing_qps="$total_rate"
+    sweep_status="completed"
+  else
+    first_failing_qps="$total_rate"
+    sweep_status="failed"
+    break
+  fi
 done
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
+  write_summary_markdown "not-run" "$highest_passing_qps" "$first_failing_qps"
   log "dry-run wrote $OUT_DIR"
   exit 0
 fi
 
-log "sweep skeleton initialized at $OUT_DIR"
+write_summary_markdown "$sweep_status" "$highest_passing_qps" "$first_failing_qps"
+log "sweep completed at $OUT_DIR"
