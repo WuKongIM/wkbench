@@ -83,7 +83,7 @@ type BackgroundUnit interface {
 
 // BackgroundTask is the active background worker returned by a BackgroundUnit.
 type BackgroundTask interface {
-	// Done closes when the worker exits. A received non-nil error is fatal to the run.
+	// Done closes when the worker exits. Later kernel lifecycle code may use a received non-nil error as fatal.
 	Done() <-chan error
 	// Stop asks the worker to flush, publish final outputs, and exit.
 	Stop(context.Context) error

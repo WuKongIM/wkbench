@@ -294,6 +294,9 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			start := time.Now()
 			task, err := background.Start(ctx, env)
 			end := time.Now()
+			if err == nil && task == nil {
+				err = fmt.Errorf("background task is nil")
+			}
 			if err != nil {
 				startedAt, endedAt, elapsedMS := timelineFields(start, end)
 				result.Status = StatusWorkerFailed

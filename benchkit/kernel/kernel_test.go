@@ -339,6 +339,7 @@ func TestEngineRunsBackgroundUnitDuringForegroundWork(t *testing.T) {
 	if unit.Metrics["ticks_total"].Sum != 1 {
 		t.Fatalf("background metrics missing post-foreground emission: %#v", unit.Metrics)
 	}
+	assertUnitTimeline(t, unit)
 }
 
 func TestEngineStopsBackgroundUnitsInReverseStartOrder(t *testing.T) {
@@ -362,6 +363,178 @@ func TestEngineStopsBackgroundUnitsInReverseStartOrder(t *testing.T) {
 	}
 	got := drainEvents(events)
 	want := []string{"a:start", "b:start", "traffic:run", "b:stop", "a:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEngineTreatsNilBackgroundTaskAsStartFailure(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_active/v1", events: events})
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_nil/v1", events: events, nilTask: true})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "nil-background-task"},
+		Units: map[string]dsl.UnitNode{
+			"active": {Use: "test.bg_active/v1"},
+			"nil":    {Use: "test.bg_nil/v1", After: []string{"active"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected nil task start error")
+	}
+	if !strings.Contains(err.Error(), `unit "nil" start`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	failed := result.Units["nil"]
+	if failed.Status != kernel.StatusWorkerFailed || failed.Error != "background task is nil" {
+		t.Fatalf("unexpected failed unit: %#v", failed)
+	}
+	assertUnitTimeline(t, failed)
+	assertBackgroundStopped(t, result.Units["active"])
+	got := drainEvents(events)
+	want := []string{"active:start", "nil:start", "active:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEngineRecordsBackgroundStartErrorAndStopsActiveBackgrounds(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_active/v1", events: events})
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_failing_start/v1", events: events, startErr: fmt.Errorf("start failed")})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background-start-fail"},
+		Units: map[string]dsl.UnitNode{
+			"active": {Use: "test.bg_active/v1"},
+			"fail":   {Use: "test.bg_failing_start/v1", After: []string{"active"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected start error")
+	}
+	if !strings.Contains(err.Error(), `unit "fail" start`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	failed := result.Units["fail"]
+	if failed.Status != kernel.StatusWorkerFailed || failed.Error != "start failed" {
+		t.Fatalf("unexpected failed unit: %#v", failed)
+	}
+	assertUnitTimeline(t, failed)
+	assertBackgroundStopped(t, result.Units["active"])
+	got := drainEvents(events)
+	want := []string{"active:start", "fail:start", "active:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEngineRecordsBackgroundStopError(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events, stopErr: fmt.Errorf("stop failed")})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background-stop-fail"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected stop error")
+	}
+	if !strings.Contains(err.Error(), `unit "metrics" stop`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	unit := result.Units["metrics"]
+	if unit.Status != kernel.StatusWorkerFailed || unit.Error != "stop failed" {
+		t.Fatalf("unexpected background unit: %#v", unit)
+	}
+	assertUnitTimeline(t, unit)
+	if unit.Metrics["ticks_total"].Sum != 1 {
+		t.Fatalf("background metrics missing stop emission: %#v", unit.Metrics)
+	}
+	got := drainEvents(events)
+	want := []string{"metrics:start", "metrics:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEngineStopsBackgroundWhenForegroundRunFails(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events})
+	reg.MustRegister(failingRunUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "foreground-run-fail"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+			"fail":    {Use: "test.failing_run/v1", After: []string{"metrics"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected foreground run error")
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	failed := result.Units["fail"]
+	if failed.Status != kernel.StatusWorkerFailed || failed.Error != "boom" {
+		t.Fatalf("unexpected failed foreground unit: %#v", failed)
+	}
+	assertBackgroundStopped(t, result.Units["metrics"])
+	got := drainEvents(events)
+	want := []string{"metrics:start", "metrics:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEngineStopsBackgroundWhenLaterPlanFails(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events})
+	reg.MustRegister(failingPlanUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "plan-fail-after-background"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+			"fail":    {Use: "test.failing_plan/v1", After: []string{"metrics"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected plan error")
+	}
+	if result.Status != kernel.StatusPlanFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	failed := result.Units["fail"]
+	if failed.Status != kernel.StatusPlanFailed || failed.Error != "boom" {
+		t.Fatalf("unexpected failed plan unit: %#v", failed)
+	}
+	assertBackgroundStopped(t, result.Units["metrics"])
+	got := drainEvents(events)
+	want := []string{"metrics:start", "metrics:stop"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
@@ -524,6 +697,21 @@ func assertUnitTimeline(t *testing.T, unit kernel.UnitResult) {
 	if unit.ElapsedMS <= 0 {
 		t.Fatalf("ElapsedMS = %d, want positive", unit.ElapsedMS)
 	}
+}
+
+func assertBackgroundStopped(t *testing.T, unit kernel.UnitResult) {
+	t.Helper()
+	if unit.Status != kernel.StatusCompleted {
+		t.Fatalf("background status = %s", unit.Status)
+	}
+	summary, ok := unit.Outputs["summary"].Value.(map[string]any)
+	if !ok || summary["stopped"] != true {
+		t.Fatalf("background output was not snapshotted after Stop: %#v", unit.Outputs)
+	}
+	if unit.Metrics["ticks_total"].Sum != 1 {
+		t.Fatalf("background metrics missing stop emission: %#v", unit.Metrics)
+	}
+	assertUnitTimeline(t, unit)
 }
 
 type timelineUnit struct{}
@@ -886,9 +1074,12 @@ func (u lifecycleProbeUnit) Run(context.Context, contract.RunEnv) error {
 }
 
 type backgroundProbeUnit struct {
-	kind   string
-	title  string
-	events chan string
+	kind     string
+	title    string
+	events   chan string
+	startErr error
+	nilTask  bool
+	stopErr  error
 }
 
 func (u backgroundProbeUnit) Definition() contract.Definition {
@@ -914,14 +1105,21 @@ func (u backgroundProbeUnit) Run(context.Context, contract.RunEnv) error {
 func (u backgroundProbeUnit) Start(_ context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
 	name := env.UnitName()
 	u.events <- name + ":start"
-	return &backgroundProbeTask{name: name, events: u.events, env: env, done: make(chan error, 1)}, nil
+	if u.startErr != nil {
+		return nil, u.startErr
+	}
+	if u.nilTask {
+		return nil, nil
+	}
+	return &backgroundProbeTask{name: name, events: u.events, env: env, done: make(chan error, 1), stopErr: u.stopErr}, nil
 }
 
 type backgroundProbeTask struct {
-	name   string
-	events chan string
-	env    contract.RunEnv
-	done   chan error
+	name    string
+	events  chan string
+	env     contract.RunEnv
+	done    chan error
+	stopErr error
 }
 
 func (t *backgroundProbeTask) Done() <-chan error { return t.done }
@@ -932,7 +1130,7 @@ func (t *backgroundProbeTask) Stop(context.Context) error {
 		return err
 	}
 	close(t.done)
-	return nil
+	return t.stopErr
 }
 
 type backgroundProbeSummary map[string]any
