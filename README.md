@@ -98,10 +98,17 @@ Run the single-node WuKongIM smoke after starting a target with bench API enable
 ./scripts/smoke-wukongim-single-node.sh
 ```
 
-Override the scenario path when needed:
+Run the mixed group/person send-rate smoke against the same target:
+
+```bash
+./scripts/smoke-wukongim-send-rate-mixed.sh
+```
+
+Override the scenario path for either smoke script when needed:
 
 ```bash
 WKBENCH_SCENARIO=/path/to/scenario.yaml ./scripts/smoke-wukongim-single-node.sh
+WKBENCH_SCENARIO=/path/to/scenario.yaml ./scripts/smoke-wukongim-send-rate-mixed.sh
 ```
 
 ## Architecture Notes
