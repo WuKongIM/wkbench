@@ -1,6 +1,7 @@
 package metricscollector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -250,6 +251,25 @@ func TestMetricSampleMarshalsWithLowercaseKeys(t *testing.T) {
 	}
 }
 
+func TestParsePrometheusReaderParsesLikeTextHelper(t *testing.T) {
+	raw := []byte(`
+wk_messages_total{node="a"} 12
+bad no-number
+ignored_metric 9
+`)
+	filter, err := newMetricFilter(collectorSpec{Include: []string{"^wk_"}})
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	samples, parseErrors := parsePrometheusReader(bytes.NewReader(raw), filter)
+	if parseErrors != 1 {
+		t.Fatalf("parse errors = %d, want 1", parseErrors)
+	}
+	if got := sampleNames(samples); strings.Join(got, ",") != "wk_messages_total" {
+		t.Fatalf("sample names = %#v", got)
+	}
+}
+
 func TestStartScrapesAndPublishesSummaryCountersMetricsAndArtifact(t *testing.T) {
 	requested := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +338,65 @@ bad no-number
 	}
 }
 
+func TestParseErrorsAreNonFatalByDefaultAndFatalInStrictMode(t *testing.T) {
+	nonstrictRequested := make(chan struct{}, 1)
+	nonstrictServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("wk_messages_total 1\nbad no-number\n"))
+		select {
+		case nonstrictRequested <- struct{}{}:
+		default:
+		}
+	}))
+	defer nonstrictServer.Close()
+
+	nonstrictEnv := newCollectorEnv(map[string]any{"interval": "1h"}, targetport.Target{APIAddrs: []string{nonstrictServer.URL}})
+	nonstrictTask, err := Unit{}.Start(context.Background(), nonstrictEnv)
+	if err != nil {
+		t.Fatalf("Start non-strict: %v", err)
+	}
+	waitForRequest(t, nonstrictRequested)
+	waitForCounter(t, nonstrictEnv, "scrape_parse_error_total", 1)
+	assertNoFatal(t, nonstrictTask.Done(), 40*time.Millisecond)
+	if err := nonstrictTask.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop non-strict: %v", err)
+	}
+	nonstrictSummary := outputSummary(t, nonstrictEnv)
+	if nonstrictSummary.SelectedSamples != 1 || len(nonstrictSummary.Latest) != 1 {
+		t.Fatalf("non-strict summary = %#v", nonstrictSummary)
+	}
+
+	strictRequested := make(chan struct{}, 1)
+	strictServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("wk_messages_total 1\nbad no-number\n"))
+		select {
+		case strictRequested <- struct{}{}:
+		default:
+		}
+	}))
+	defer strictServer.Close()
+
+	strictEnv := newCollectorEnv(map[string]any{
+		"interval":               "1h",
+		"fail_on_scrape_error":   true,
+		"max_consecutive_errors": 1,
+	}, targetport.Target{APIAddrs: []string{strictServer.URL}})
+	strictTask, err := Unit{}.Start(context.Background(), strictEnv)
+	if err != nil {
+		t.Fatalf("Start strict: %v", err)
+	}
+	waitForRequest(t, strictRequested)
+	fatal := waitForFatal(t, strictTask.Done())
+	if !strings.Contains(fatal.Error(), "scrape") && !strings.Contains(fatal.Error(), "parse") {
+		t.Fatalf("fatal error = %v, want scrape or parse", fatal)
+	}
+	if err := strictTask.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop strict: %v", err)
+	}
+	if got := strictEnv.CounterValue("scrape_parse_error_total"); got != 1 {
+		t.Fatalf("strict parse error counter = %v, want 1", got)
+	}
+}
+
 func TestArtifactJSONLContainsLowercaseSampleFields(t *testing.T) {
 	requested := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +444,47 @@ func TestArtifactJSONLContainsLowercaseSampleFields(t *testing.T) {
 		if _, ok := sample[key]; !ok {
 			t.Fatalf("sample missing lower-case key %q: %#v", key, sample)
 		}
+	}
+}
+
+func TestScrapesAddressesConcurrentlyWithinTick(t *testing.T) {
+	slowStarted := make(chan struct{}, 1)
+	fastRequested := make(chan struct{}, 1)
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case slowStarted <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer slowServer.Close()
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case fastRequested <- struct{}{}:
+		default:
+		}
+		_, _ = w.Write([]byte("wk_fast_total 1\n"))
+	}))
+	defer fastServer.Close()
+
+	env := newCollectorEnv(map[string]any{
+		"interval": "1h",
+		"timeout":  "200ms",
+	}, targetport.Target{APIAddrs: []string{slowServer.URL, fastServer.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, slowStarted)
+
+	select {
+	case <-fastRequested:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatalf("fast endpoint was blocked by slow endpoint timeout")
+	}
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }
 
@@ -479,6 +599,58 @@ wk_b{node="1"} 2
 	}
 	if got := sampleSummaryNames(summary.Latest); strings.Join(got, ",") != "wk_a,wk_b" {
 		t.Fatalf("latest names = %#v, want deterministic capped order", got)
+	}
+}
+
+func TestSeriesKeysDoNotCollideOnLabelDelimiters(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`
+wk_series{a="b,c=d"} 1
+wk_series{a="b",c="d"} 2
+wk_series{z="last"} 3
+`))
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	env := newCollectorEnv(map[string]any{
+		"interval":            "1h",
+		"max_summary_metrics": 2,
+	}, targetport.Target{APIAddrs: []string{server.URL}})
+	task, err := Unit{}.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForRequest(t, requested)
+	waitForCounter(t, env, "scrape_success_total", 1)
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	summary := outputSummary(t, env)
+	if summary.DroppedMetricNames != 1 {
+		t.Fatalf("dropped metric names = %d, want 1", summary.DroppedMetricNames)
+	}
+	if len(summary.Latest) != 2 {
+		t.Fatalf("latest = %#v, want both non-colliding wk_series samples", summary.Latest)
+	}
+	wantLabels := []map[string]string{
+		{"a": "b,c=d"},
+		{"a": "b", "c": "d"},
+	}
+	gotLabels := make([]map[string]string, 0, len(summary.Latest))
+	for _, sample := range summary.Latest {
+		if sample.Name != "wk_series" {
+			t.Fatalf("latest sample = %#v, want only wk_series samples", sample)
+		}
+		gotLabels = append(gotLabels, sample.Labels)
+	}
+	if !sameLabelSets(gotLabels, wantLabels) {
+		t.Fatalf("latest labels = %#v, want %#v", gotLabels, wantLabels)
 	}
 }
 
@@ -656,4 +828,38 @@ func waitForCounter(t *testing.T, env *contract.TestRunEnv, name string, want fl
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("counter %q = %v, want at least %v", name, env.CounterValue(name), want)
+}
+
+func sameLabelSets(got, want []map[string]string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	used := make([]bool, len(want))
+	for _, labels := range got {
+		found := false
+		for index, candidate := range want {
+			if used[index] || !sameStringMap(labels, candidate) {
+				continue
+			}
+			used[index] = true
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, aValue := range a {
+		if b[key] != aValue {
+			return false
+		}
+	}
+	return true
 }

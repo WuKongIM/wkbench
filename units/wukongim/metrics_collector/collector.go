@@ -166,20 +166,30 @@ func (c *collector) scrapeTick(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	c.state.scrapeTicks++
-	hadScrapeError := false
+
+	results := make([]nodeScrapeResult, len(c.target.APIAddrs))
+	var wg sync.WaitGroup
+	wg.Add(len(c.target.APIAddrs))
 	for index, addr := range c.target.APIAddrs {
-		if ctx.Err() != nil {
-			return hadScrapeError, nil
-		}
-		result := c.scrapeNode(ctx, index, addr)
-		if ctx.Err() != nil {
-			return hadScrapeError, nil
-		}
+		go func(index int, addr string) {
+			defer wg.Done()
+			results[index] = c.scrapeNode(ctx, index, addr)
+		}(index, addr)
+	}
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return false, nil
+	}
+
+	hadScrapeError := false
+	for index, result := range results {
 		if err := c.writeRecord(result.record); err != nil {
 			return hadScrapeError, fmt.Errorf("write metrics artifact: %w", err)
 		}
+		addr := c.target.APIAddrs[index]
 		c.recordResult(addr, result)
-		if result.err != nil {
+		if result.err != nil || result.parseErrors > 0 {
 			hadScrapeError = true
 		}
 	}
@@ -216,13 +226,6 @@ func (c *collector) scrapeNode(ctx context.Context, index int, addr string) node
 	defer resp.Body.Close()
 	record.StatusCode = resp.StatusCode
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		record.DurationMS = durationMS(time.Since(started))
-		record.Status = "error"
-		record.Error = err.Error()
-		return nodeScrapeResult{record: record, err: err}
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("HTTP %d", resp.StatusCode)
 		record.DurationMS = durationMS(time.Since(started))
@@ -231,7 +234,7 @@ func (c *collector) scrapeNode(ctx context.Context, index int, addr string) node
 		return nodeScrapeResult{record: record, err: err}
 	}
 
-	samples, parseErrors := parsePrometheusText(body, c.filter)
+	samples, parseErrors := parsePrometheusReader(resp.Body, c.filter)
 	sortMetricSamples(samples)
 	record.DurationMS = durationMS(time.Since(started))
 	record.Samples = samples
@@ -362,24 +365,48 @@ func compareMetricSamples(a, b metricSample) int {
 	return 0
 }
 
+type seriesLabelPair struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 func sampleSeriesKey(sample metricSample) string {
-	return sample.Name + "{" + labelsKey(sample.Labels) + "}"
+	payload := struct {
+		Name   string            `json:"name"`
+		Labels []seriesLabelPair `json:"labels"`
+	}{
+		Name:   sample.Name,
+		Labels: sortedLabelPairs(sample.Labels),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return sample.Name
+	}
+	return string(data)
 }
 
 func labelsKey(labels map[string]string) string {
 	if len(labels) == 0 {
 		return ""
 	}
+	data, err := json.Marshal(sortedLabelPairs(labels))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func sortedLabelPairs(labels map[string]string) []seriesLabelPair {
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
+	pairs := make([]seriesLabelPair, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, key+"="+labels[key])
+		pairs = append(pairs, seriesLabelPair{Name: key, Value: labels[key]})
 	}
-	return strings.Join(parts, ",")
+	return pairs
 }
 
 func percentileMS(values []time.Duration, percentile float64) float64 {

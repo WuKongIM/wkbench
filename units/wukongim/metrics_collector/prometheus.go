@@ -1,7 +1,9 @@
 package metricscollector
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"strconv"
@@ -32,10 +34,16 @@ func newMetricFilter(spec collectorSpec) (metricFilter, error) {
 }
 
 func parsePrometheusText(data []byte, filter metricFilter) ([]metricSample, int64) {
-	lines := strings.Split(string(data), "\n")
-	samples := make([]metricSample, 0, len(lines))
+	return parsePrometheusReader(strings.NewReader(string(data)), filter)
+}
+
+func parsePrometheusReader(reader io.Reader, filter metricFilter) ([]metricSample, int64) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	samples := make([]metricSample, 0)
 	var parseErrors int64
-	for _, line := range lines {
+	for scanner.Scan() {
+		line := scanner.Text()
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -49,6 +57,9 @@ func parsePrometheusText(data []byte, filter metricFilter) ([]metricSample, int6
 			continue
 		}
 		samples = append(samples, sample)
+	}
+	if scanner.Err() != nil {
+		parseErrors++
 	}
 	return samples, parseErrors
 }
