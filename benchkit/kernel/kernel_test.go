@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -304,6 +306,66 @@ func TestEnginePreservesMetricsWhenUnitRunFails(t *testing.T) {
 	metric := result.Units["fail"].Metrics["before_fail_total"]
 	if metric.Type != "counter" || metric.Count != 1 || metric.Sum != 1 {
 		t.Fatalf("unexpected failed-unit metric: %#v", metric)
+	}
+}
+
+func TestEngineWritesDeclaredArtifacts(t *testing.T) {
+	reportDir := t.TempDir()
+	reg := registry.New()
+	reg.MustRegister(artifactMetricsUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "artifacts", ReportDir: reportDir},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.artifact_metrics/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	artifact := result.Units["metrics"].Artifacts["metrics.jsonl"]
+	if artifact.Path != "artifacts/metrics/metrics.jsonl" {
+		t.Fatalf("artifact path = %q, want artifacts/metrics/metrics.jsonl", artifact.Path)
+	}
+	if artifact.ContentType != "application/jsonl" {
+		t.Fatalf("artifact content type = %q, want application/jsonl", artifact.ContentType)
+	}
+	if artifact.SizeBytes <= 0 {
+		t.Fatalf("artifact size = %d, want positive", artifact.SizeBytes)
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, filepath.FromSlash(artifact.Path)))
+	if err != nil {
+		t.Fatalf("artifact file missing: %v", err)
+	}
+	if string(data) != "{\"sendack_ok\":1}\n" {
+		t.Fatalf("artifact data = %q", data)
+	}
+}
+
+func TestEngineRejectsUndeclaredArtifact(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(undeclaredArtifactUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "artifact-undeclared", ReportDir: t.TempDir()},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.undeclared_artifact/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected undeclared artifact error")
+	}
+	if !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("error = %q, want not declared", err.Error())
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	unit := result.Units["metrics"]
+	if unit.Status != kernel.StatusWorkerFailed || !strings.Contains(unit.Error, "not declared") {
+		t.Fatalf("unexpected failed unit: %#v", unit)
 	}
 }
 
@@ -1252,6 +1314,58 @@ func (failingMetricUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan,
 func (failingMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	env.EmitCounter("before_fail_total", 1, nil)
 	return fmt.Errorf("boom")
+}
+
+type artifactMetricsUnit struct{}
+
+func (artifactMetricsUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.artifact_metrics/v1",
+		Artifacts: []contract.ArtifactDef{
+			{Name: "metrics.jsonl", ContentType: "application/jsonl"},
+		},
+	}
+}
+
+func (artifactMetricsUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (artifactMetricsUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (artifactMetricsUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	w, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("{\"sendack_ok\":1}\n")); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+type undeclaredArtifactUnit struct{}
+
+func (undeclaredArtifactUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.undeclared_artifact/v1"}
+}
+
+func (undeclaredArtifactUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (undeclaredArtifactUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (undeclaredArtifactUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	w, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return err
+	}
+	return w.Close()
 }
 
 type closeableUnit struct {

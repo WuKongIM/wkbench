@@ -2,6 +2,8 @@ package contract_test
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,51 @@ func TestTestRunEnvRecordsDurationObservations(t *testing.T) {
 	values[0] = time.Hour
 	if env.DurationValues("sendack_latency")[0] != 10*time.Millisecond {
 		t.Fatal("DurationValues must return a copy")
+	}
+}
+
+func TestTestRunEnvWritesDeclaredArtifact(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{
+		{Name: "metrics.jsonl", ContentType: "application/jsonl"},
+	})
+
+	w, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	payload := []byte("{\"ok\":true}\n")
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close artifact: %v", err)
+	}
+
+	info := env.Artifacts()["metrics.jsonl"]
+	if info.Path == "" {
+		t.Fatal("artifact path is empty")
+	}
+	if info.ContentType != "application/jsonl" {
+		t.Fatalf("ContentType = %q, want application/jsonl", info.ContentType)
+	}
+	if info.SizeBytes != int64(len(payload)) {
+		t.Fatalf("SizeBytes = %d, want %d", info.SizeBytes, len(payload))
+	}
+	if _, err := os.Stat(info.Path); err != nil {
+		t.Fatalf("artifact file missing: %v", err)
+	}
+}
+
+func TestTestRunEnvRejectsUndeclaredArtifact(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
+
+	_, err := env.OpenArtifact("metrics.jsonl")
+	if err == nil {
+		t.Fatal("expected undeclared artifact error")
+	}
+	if !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("error = %q, want not declared", err.Error())
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +62,18 @@ type MetricDef struct {
 type ArtifactDef struct {
 	// Name is the unit-local artifact name.
 	Name string
+	// ContentType is the MIME type written for this artifact when known.
+	ContentType string
+}
+
+// ArtifactInfo describes an artifact produced through a RunEnv.
+type ArtifactInfo struct {
+	// Path is the artifact file path.
+	Path string
+	// ContentType is the declared MIME type when known.
+	ContentType string
+	// SizeBytes is the number of bytes written before Close.
+	SizeBytes int64
 }
 
 // Unit is the standard interface implemented by every benchmark unit.
@@ -123,6 +137,8 @@ type RunEnv interface {
 	NextID(prefix string) string
 	// Payload returns deterministic payload bytes of size.
 	Payload(size int) []byte
+	// OpenArtifact opens a declared artifact for writing.
+	OpenArtifact(name string) (io.WriteCloser, error)
 }
 
 // ReportableOutput allows output values to opt into JSON/Markdown reports.
@@ -246,14 +262,16 @@ type OutputReader interface {
 
 // TestRunEnv is a small in-memory RunEnv useful for unit tests.
 type TestRunEnv struct {
-	runID       string
-	unitName    string
-	inputs      map[string]any
-	spec        map[string]any
-	outputs     map[string]any
-	counters    map[string]float64
-	durations   map[string][]time.Duration
-	runDuration time.Duration
+	runID        string
+	unitName     string
+	inputs       map[string]any
+	spec         map[string]any
+	outputs      map[string]any
+	counters     map[string]float64
+	durations    map[string][]time.Duration
+	artifactDefs map[string]ArtifactDef
+	artifacts    map[string]ArtifactInfo
+	runDuration  time.Duration
 
 	mu     sync.Mutex
 	nextID int64
@@ -262,14 +280,16 @@ type TestRunEnv struct {
 // NewTestRunEnv builds a RunEnv with fixed inputs and spec.
 func NewTestRunEnv(runID, unitName string, inputs map[string]any, spec map[string]any) *TestRunEnv {
 	return &TestRunEnv{
-		runID:       runID,
-		unitName:    unitName,
-		inputs:      cloneMap(inputs),
-		spec:        cloneMap(spec),
-		outputs:     make(map[string]any),
-		counters:    make(map[string]float64),
-		durations:   make(map[string][]time.Duration),
-		runDuration: time.Second,
+		runID:        runID,
+		unitName:     unitName,
+		inputs:       cloneMap(inputs),
+		spec:         cloneMap(spec),
+		outputs:      make(map[string]any),
+		counters:     make(map[string]float64),
+		durations:    make(map[string][]time.Duration),
+		artifactDefs: make(map[string]ArtifactDef),
+		artifacts:    make(map[string]ArtifactInfo),
+		runDuration:  time.Second,
 	}
 }
 
@@ -345,6 +365,48 @@ func (e *TestRunEnv) DurationValues(name string) []time.Duration {
 	return append([]time.Duration(nil), values...)
 }
 
+// DeclareArtifacts sets the artifact declarations accepted by OpenArtifact.
+func (e *TestRunEnv) DeclareArtifacts(defs []ArtifactDef) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.artifactDefs = make(map[string]ArtifactDef, len(defs))
+	for _, def := range defs {
+		e.artifactDefs[def.Name] = def
+	}
+	if e.artifacts == nil {
+		e.artifacts = make(map[string]ArtifactInfo)
+	}
+}
+
+// Artifacts returns a copy of artifact information recorded on Close.
+func (e *TestRunEnv) Artifacts() map[string]ArtifactInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.artifacts) == 0 {
+		return nil
+	}
+	out := make(map[string]ArtifactInfo, len(e.artifacts))
+	for name, info := range e.artifacts {
+		out[name] = info
+	}
+	return out
+}
+
+// OpenArtifact implements RunEnv.
+func (e *TestRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
+	e.mu.Lock()
+	def, ok := e.artifactDefs[name]
+	e.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("artifact %q not declared", name)
+	}
+	file, err := os.CreateTemp("", "wkbench-artifact-*")
+	if err != nil {
+		return nil, err
+	}
+	return &testArtifactWriter{env: e, name: name, file: file, contentType: def.ContentType}, nil
+}
+
 // NextID implements RunEnv.
 func (e *TestRunEnv) NextID(prefix string) string {
 	e.mu.Lock()
@@ -366,6 +428,42 @@ func (e *TestRunEnv) Payload(size int) []byte {
 		payload[i] = byte('a' + i%26)
 	}
 	return payload
+}
+
+type testArtifactWriter struct {
+	env         *TestRunEnv
+	name        string
+	file        *os.File
+	contentType string
+	size        int64
+	closed      bool
+}
+
+func (w *testArtifactWriter) Write(p []byte) (int, error) {
+	n, err := w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *testArtifactWriter) Close() error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	w.env.mu.Lock()
+	defer w.env.mu.Unlock()
+	if w.env.artifacts == nil {
+		w.env.artifacts = make(map[string]ArtifactInfo)
+	}
+	w.env.artifacts[w.name] = ArtifactInfo{
+		Path:        w.file.Name(),
+		ContentType: w.contentType,
+		SizeBytes:   w.size,
+	}
+	return nil
 }
 
 func cloneMap(in map[string]any) map[string]any {

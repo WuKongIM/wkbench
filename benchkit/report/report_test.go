@@ -161,6 +161,43 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 	}
 }
 
+func TestWriteDirIncludesArtifactRows(t *testing.T) {
+	dir := t.TempDir()
+	result := kernel.Result{
+		RunID:  "demo",
+		Status: kernel.StatusCompleted,
+		Units: map[string]kernel.UnitResult{
+			"metrics": {
+				Kind:   "test.metrics/v1",
+				Status: kernel.StatusCompleted,
+				Artifacts: map[string]kernel.ArtifactResult{
+					"metrics.jsonl": {
+						Path:      "artifacts/metrics/metrics.jsonl",
+						SizeBytes: 2048,
+					},
+				},
+			},
+		},
+	}
+	if err := report.WriteDir(dir, result); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"artifact `metrics.jsonl`",
+		"`artifacts/metrics/metrics.jsonl`",
+		"2.0KB",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary.md missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestWriteDirIncludesCleanupErrors(t *testing.T) {
 	dir := t.TempDir()
 	result := kernel.Result{

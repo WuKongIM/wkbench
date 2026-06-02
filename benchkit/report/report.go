@@ -64,6 +64,14 @@ func summaryMarkdown(result kernel.Result) string {
 		for _, metricName := range metricNames {
 			out += formatMetric(metricName, unit.Metrics[metricName])
 		}
+		artifactNames := make([]string, 0, len(unit.Artifacts))
+		for artifactName := range unit.Artifacts {
+			artifactNames = append(artifactNames, artifactName)
+		}
+		sort.Strings(artifactNames)
+		for _, artifactName := range artifactNames {
+			out += formatArtifact(artifactName, unit.Artifacts[artifactName])
+		}
 		for _, cleanup := range unit.Cleanup {
 			out += formatCleanup(cleanup)
 		}
@@ -130,6 +138,20 @@ func formatNumber(value float64) string {
 
 func formatMilliseconds(value float64) string {
 	return fmt.Sprintf("%.2fms", value*1000)
+}
+
+func formatArtifact(name string, artifact kernel.ArtifactResult) string {
+	return fmt.Sprintf("  - artifact `%s`: `%s`, %s\n", name, artifact.Path, formatBytes(artifact.SizeBytes))
+}
+
+func formatBytes(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%dB", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(size)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
 }
 
 func formatCleanup(cleanup kernel.CleanupResult) string {

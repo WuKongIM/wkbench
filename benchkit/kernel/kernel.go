@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -66,6 +70,8 @@ type UnitResult struct {
 	Outputs map[string]OutputResult `json:"outputs,omitempty"`
 	// Metrics lists aggregated metrics emitted by the unit.
 	Metrics map[string]MetricResult `json:"metrics,omitempty"`
+	// Artifacts lists files emitted by the unit.
+	Artifacts map[string]ArtifactResult `json:"artifacts,omitempty"`
 	// StartedAt is the RFC3339Nano timestamp when runtime work started.
 	StartedAt string `json:"started_at,omitempty"`
 	// EndedAt is the RFC3339Nano timestamp when runtime work ended.
@@ -128,6 +134,16 @@ type MetricResult struct {
 	P95 float64 `json:"p95,omitempty"`
 	// P99 is the nearest-rank 99th percentile for duration metrics.
 	P99 float64 `json:"p99,omitempty"`
+}
+
+// ArtifactResult summarizes one produced artifact.
+type ArtifactResult struct {
+	// Path is the report-directory-relative artifact path.
+	Path string `json:"path"`
+	// ContentType is the declared MIME type when known.
+	ContentType string `json:"content_type,omitempty"`
+	// SizeBytes is the number of bytes written before Close.
+	SizeBytes int64 `json:"size_bytes"`
 }
 
 // CleanupResult summarizes cleanup for one produced output.
@@ -333,11 +349,13 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			return result, primaryErr
 		}
 		env := &runEnv{
-			baseEnv:  base,
-			graph:    graph,
-			unitName: name,
-			outputs:  outputs,
-			metrics:  newMetricStore(node.def.Metrics),
+			baseEnv:      base,
+			graph:        graph,
+			unitName:     name,
+			outputs:      outputs,
+			metrics:      newMetricStore(node.def.Metrics),
+			artifactDefs: artifactDefsByName(node.def.Artifacts),
+			artifacts:    make(map[string]ArtifactResult),
 		}
 		if background, ok := node.unit.(contract.BackgroundUnit); ok {
 			start := time.Now()
@@ -354,6 +372,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 					Status:    StatusWorkerFailed,
 					Error:     err.Error(),
 					Metrics:   env.metrics.results(),
+					Artifacts: env.artifactResults(),
 					StartedAt: startedAt,
 					EndedAt:   endedAt,
 					ElapsedMS: elapsedMS,
@@ -409,6 +428,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 				Status:    StatusWorkerFailed,
 				Error:     foregroundErr.Error(),
 				Metrics:   env.metrics.results(),
+				Artifacts: env.artifactResults(),
 				StartedAt: startedAt,
 				EndedAt:   endedAt,
 				ElapsedMS: elapsedMS,
@@ -427,6 +447,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			Status:    StatusCompleted,
 			Outputs:   outputs.resultsForUnit(name, node.def.Outputs),
 			Metrics:   env.metrics.results(),
+			Artifacts: env.artifactResults(),
 			StartedAt: startedAt,
 			EndedAt:   endedAt,
 			ElapsedMS: elapsedMS,
@@ -508,6 +529,7 @@ func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *ou
 			Error:     errorText,
 			Outputs:   outputs.resultsForUnit(bg.name, bg.node.def.Outputs),
 			Metrics:   bg.env.metrics.results(),
+			Artifacts: bg.env.artifactResults(),
 			StartedAt: startedAt,
 			EndedAt:   endedAt,
 			ElapsedMS: elapsedMS,
@@ -850,12 +872,14 @@ func (e *baseEnv) DecodeSpec(out any) error {
 
 type runEnv struct {
 	*baseEnv
-	graph    *graph
-	unitName string
-	outputs  *outputStore
-	metrics  *metricStore
-	nextID   int64
-	mu       sync.Mutex
+	graph        *graph
+	unitName     string
+	outputs      *outputStore
+	metrics      *metricStore
+	artifactDefs map[string]contract.ArtifactDef
+	artifacts    map[string]ArtifactResult
+	nextID       int64
+	mu           sync.Mutex
 }
 
 func (e *runEnv) Input(name string) (any, error) {
@@ -878,6 +902,100 @@ func (e *runEnv) EmitCounter(name string, delta float64, labels contract.Labels)
 
 func (e *runEnv) ObserveDuration(name string, value time.Duration, labels contract.Labels) {
 	e.metrics.observeDuration(name, value, labels)
+}
+
+func (e *runEnv) OpenArtifact(name string) (io.WriteCloser, error) {
+	def, ok := e.artifactDefs[name]
+	if !ok {
+		return nil, fmt.Errorf("artifact %q not declared by unit %q", name, e.unitName)
+	}
+	if err := validateArtifactName(name); err != nil {
+		return nil, err
+	}
+	reportDir := strings.TrimSpace(e.scenario.Run.ReportDir)
+	if reportDir == "" {
+		return nil, fmt.Errorf("scenario run.report_dir is required to write artifact %q", name)
+	}
+	artifactDir := filepath.Join(reportDir, "artifacts", e.unitName)
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create artifact directory for %q: %w", name, err)
+	}
+	file, err := os.Create(filepath.Join(artifactDir, name))
+	if err != nil {
+		return nil, fmt.Errorf("open artifact %q: %w", name, err)
+	}
+	return &runArtifactWriter{
+		env:         e,
+		name:        name,
+		file:        file,
+		relPath:     path.Join("artifacts", e.unitName, name),
+		contentType: def.ContentType,
+	}, nil
+}
+
+func (e *runEnv) artifactResults() map[string]ArtifactResult {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.artifacts) == 0 {
+		return nil
+	}
+	results := make(map[string]ArtifactResult, len(e.artifacts))
+	for name, artifact := range e.artifacts {
+		results[name] = artifact
+	}
+	return results
+}
+
+func artifactDefsByName(defs []contract.ArtifactDef) map[string]contract.ArtifactDef {
+	byName := make(map[string]contract.ArtifactDef, len(defs))
+	for _, def := range defs {
+		byName[def.Name] = def
+	}
+	return byName
+}
+
+func validateArtifactName(name string) error {
+	if name == "" {
+		return fmt.Errorf("artifact name is required")
+	}
+	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("artifact %q must be a simple relative file name", name)
+	}
+	return nil
+}
+
+type runArtifactWriter struct {
+	env         *runEnv
+	name        string
+	file        *os.File
+	relPath     string
+	contentType string
+	size        int64
+	closed      bool
+}
+
+func (w *runArtifactWriter) Write(p []byte) (int, error) {
+	n, err := w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *runArtifactWriter) Close() error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	w.env.mu.Lock()
+	defer w.env.mu.Unlock()
+	w.env.artifacts[w.name] = ArtifactResult{
+		Path:        w.relPath,
+		ContentType: w.contentType,
+		SizeBytes:   w.size,
+	}
+	return nil
 }
 
 type metricStore struct {
