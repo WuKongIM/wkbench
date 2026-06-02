@@ -7,12 +7,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "unsafe"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	"github.com/WuKongIM/wkbench/benchkit/registry"
 )
+
+//go:linkname timelineFields github.com/WuKongIM/wkbench/benchkit/kernel.timelineFields
+func timelineFields(start, end time.Time) (string, string, int64)
 
 func TestEngineAutoWiresUniqueMatchingPortsAndRunsInDependencyOrder(t *testing.T) {
 	reg := registry.New()
@@ -419,6 +423,16 @@ func TestEngineRecordsTimelineWhenUnitRunFails(t *testing.T) {
 		t.Fatalf("unexpected failed unit: %#v", unit)
 	}
 	assertUnitTimeline(t, unit)
+}
+
+func TestTimelineFieldsClampsPositiveSubmillisecondElapsed(t *testing.T) {
+	start := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	end := start.Add(500 * time.Microsecond)
+
+	_, _, elapsedMS := timelineFields(start, end)
+	if elapsedMS != 1 {
+		t.Fatalf("ElapsedMS = %d, want 1", elapsedMS)
+	}
 }
 
 func assertUnitTimeline(t *testing.T, unit kernel.UnitResult) {
