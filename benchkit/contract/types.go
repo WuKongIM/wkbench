@@ -74,6 +74,21 @@ type Unit interface {
 	Run(context.Context, RunEnv) error
 }
 
+// BackgroundUnit is an optional lifecycle for units that run while later graph nodes execute.
+type BackgroundUnit interface {
+	Unit
+	// Start starts background work and returns when the unit is ready for downstream units.
+	Start(context.Context, RunEnv) (BackgroundTask, error)
+}
+
+// BackgroundTask is the active background worker returned by a BackgroundUnit.
+type BackgroundTask interface {
+	// Done closes when the worker exits. A received non-nil error is fatal to the run.
+	Done() <-chan error
+	// Stop asks the worker to flush, publish final outputs, and exit.
+	Stop(context.Context) error
+}
+
 // ValidateEnv is the environment available during unit validation.
 type ValidateEnv interface {
 	// UnitName returns the scenario-local unit name.

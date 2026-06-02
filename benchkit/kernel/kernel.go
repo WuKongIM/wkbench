@@ -265,18 +265,21 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 	cleanup := func() {
 		outputs.cleanup(graph.order, result.Units)
 	}
+	var active []activeBackground
 	for _, name := range graph.order {
 		node := graph.nodes[name]
 		base := newBaseEnv(scenario, name, node.dsl.Spec)
 		if err := node.unit.Validate(ctx, base); err != nil {
 			result.Status = StatusConfigFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusConfigFailed, Error: err.Error()}
+			stopBackgrounds(ctx, active, outputs, result.Units)
 			cleanup()
 			return result, fmt.Errorf("unit %q validate: %w", name, err)
 		}
 		if _, err := node.unit.Plan(ctx, base); err != nil {
 			result.Status = StatusPlanFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusPlanFailed, Error: err.Error()}
+			stopBackgrounds(ctx, active, outputs, result.Units)
 			cleanup()
 			return result, fmt.Errorf("unit %q plan: %w", name, err)
 		}
@@ -286,6 +289,29 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			unitName: name,
 			outputs:  outputs,
 			metrics:  newMetricStore(node.def.Metrics),
+		}
+		if background, ok := node.unit.(contract.BackgroundUnit); ok {
+			start := time.Now()
+			task, err := background.Start(ctx, env)
+			end := time.Now()
+			if err != nil {
+				startedAt, endedAt, elapsedMS := timelineFields(start, end)
+				result.Status = StatusWorkerFailed
+				result.Units[name] = UnitResult{
+					Kind:      node.def.Kind,
+					Status:    StatusWorkerFailed,
+					Error:     err.Error(),
+					Metrics:   env.metrics.results(),
+					StartedAt: startedAt,
+					EndedAt:   endedAt,
+					ElapsedMS: elapsedMS,
+				}
+				stopBackgrounds(ctx, active, outputs, result.Units)
+				cleanup()
+				return result, fmt.Errorf("unit %q start: %w", name, err)
+			}
+			active = append(active, activeBackground{name: name, node: node, env: env, task: task, startedAt: start})
+			continue
 		}
 		start := time.Now()
 		err := node.unit.Run(ctx, env)
@@ -302,6 +328,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 				EndedAt:   endedAt,
 				ElapsedMS: elapsedMS,
 			}
+			stopBackgrounds(ctx, active, outputs, result.Units)
 			cleanup()
 			return result, fmt.Errorf("unit %q run: %w", name, err)
 		}
@@ -315,8 +342,43 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			ElapsedMS: elapsedMS,
 		}
 	}
+	if err := stopBackgrounds(ctx, active, outputs, result.Units); err != nil {
+		result.Status = StatusWorkerFailed
+		cleanup()
+		return result, err
+	}
 	cleanup()
 	return result, nil
+}
+
+func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult) error {
+	var firstErr error
+	for i := len(active) - 1; i >= 0; i-- {
+		bg := active[i]
+		err := bg.task.Stop(ctx)
+		end := time.Now()
+		startedAt, endedAt, elapsedMS := timelineFields(bg.startedAt, end)
+		status := StatusCompleted
+		errorText := ""
+		if err != nil {
+			status = StatusWorkerFailed
+			errorText = err.Error()
+			if firstErr == nil {
+				firstErr = fmt.Errorf("unit %q stop: %w", bg.name, err)
+			}
+		}
+		results[bg.name] = UnitResult{
+			Kind:      bg.node.def.Kind,
+			Status:    status,
+			Error:     errorText,
+			Outputs:   outputs.resultsForUnit(bg.name, bg.node.def.Outputs),
+			Metrics:   bg.env.metrics.results(),
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+			ElapsedMS: elapsedMS,
+		}
+	}
+	return firstErr
 }
 
 func graphWiring(graph *graph) []ExplainBinding {
@@ -371,6 +433,14 @@ type graphNode struct {
 	def      contract.Definition
 	bindings map[string]resourceRef
 	after    []string
+}
+
+type activeBackground struct {
+	name      string
+	node      *graphNode
+	env       *runEnv
+	task      contract.BackgroundTask
+	startedAt time.Time
 }
 
 type resourceRef struct {

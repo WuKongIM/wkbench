@@ -306,6 +306,67 @@ func TestEnginePreservesMetricsWhenUnitRunFails(t *testing.T) {
 	}
 }
 
+func TestEngineRunsBackgroundUnitDuringForegroundWork(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{events: events})
+	reg.MustRegister(foregroundProbeUnit{events: events})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "background"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.background_probe/v1"},
+			"traffic": {Use: "test.foreground_probe/v1", After: []string{"metrics"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	got := drainEvents(events)
+	want := []string{"metrics:start", "traffic:run", "metrics:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	unit := result.Units["metrics"]
+	if unit.Status != kernel.StatusCompleted {
+		t.Fatalf("background status = %s", unit.Status)
+	}
+	summary, ok := unit.Outputs["summary"].Value.(map[string]any)
+	if !ok || summary["stopped"] != true {
+		t.Fatalf("background output was not snapshotted after Stop: %#v", unit.Outputs)
+	}
+	if unit.Metrics["ticks_total"].Sum != 1 {
+		t.Fatalf("background metrics missing post-foreground emission: %#v", unit.Metrics)
+	}
+}
+
+func TestEngineStopsBackgroundUnitsInReverseStartOrder(t *testing.T) {
+	events := make(chan string, 8)
+	reg := registry.New()
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_a/v1", title: "a", events: events})
+	reg.MustRegister(backgroundProbeUnit{kind: "test.bg_b/v1", title: "b", events: events})
+	reg.MustRegister(foregroundProbeUnit{events: events})
+
+	_, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "reverse"},
+		Units: map[string]dsl.UnitNode{
+			"a":       {Use: "test.bg_a/v1"},
+			"b":       {Use: "test.bg_b/v1", After: []string{"a"}},
+			"traffic": {Use: "test.foreground_probe/v1", After: []string{"b"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	got := drainEvents(events)
+	want := []string{"a:start", "b:start", "traffic:run", "b:stop", "a:stop"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
 func TestEngineClosesOutputsInReverseExecutionOrder(t *testing.T) {
 	reg := registry.New()
 	var events []string
@@ -822,4 +883,88 @@ func (u lifecycleProbeUnit) Plan(context.Context, contract.PlanEnv) (contract.Pl
 func (u lifecycleProbeUnit) Run(context.Context, contract.RunEnv) error {
 	*u.calls = append(*u.calls, "run")
 	return fmt.Errorf("run must not run during explain")
+}
+
+type backgroundProbeUnit struct {
+	kind   string
+	title  string
+	events chan string
+}
+
+func (u backgroundProbeUnit) Definition() contract.Definition {
+	kind := u.kind
+	if kind == "" {
+		kind = "test.background_probe/v1"
+	}
+	return contract.Definition{
+		Kind:    kind,
+		Title:   u.title,
+		Outputs: []contract.PortDef{{Name: "summary", Type: "port.test.summary/v1"}},
+		Metrics: []contract.MetricDef{{Name: "ticks_total", Type: "counter"}},
+	}
+}
+
+func (u backgroundProbeUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (u backgroundProbeUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (u backgroundProbeUnit) Run(context.Context, contract.RunEnv) error {
+	return fmt.Errorf("background unit Run should not be called")
+}
+func (u backgroundProbeUnit) Start(_ context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	name := env.UnitName()
+	u.events <- name + ":start"
+	return &backgroundProbeTask{name: name, events: u.events, env: env, done: make(chan error, 1)}, nil
+}
+
+type backgroundProbeTask struct {
+	name   string
+	events chan string
+	env    contract.RunEnv
+	done   chan error
+}
+
+func (t *backgroundProbeTask) Done() <-chan error { return t.done }
+func (t *backgroundProbeTask) Stop(context.Context) error {
+	t.events <- t.name + ":stop"
+	t.env.EmitCounter("ticks_total", 1, nil)
+	if err := t.env.SetOutput("summary", backgroundProbeSummary{"stopped": true}); err != nil {
+		return err
+	}
+	close(t.done)
+	return nil
+}
+
+type backgroundProbeSummary map[string]any
+
+func (s backgroundProbeSummary) ReportOutput() any {
+	return map[string]any(s)
+}
+
+type foregroundProbeUnit struct {
+	events chan string
+}
+
+func (foregroundProbeUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.foreground_probe/v1"}
+}
+func (foregroundProbeUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (foregroundProbeUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (u foregroundProbeUnit) Run(_ context.Context, env contract.RunEnv) error {
+	u.events <- env.UnitName() + ":run"
+	return nil
+}
+
+func drainEvents(events chan string) []string {
+	var out []string
+	for {
+		select {
+		case event := <-events:
+			out = append(out, event)
+		default:
+			return out
+		}
+	}
 }
