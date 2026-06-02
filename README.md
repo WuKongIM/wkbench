@@ -118,6 +118,27 @@ Start a local WuKongIM v2 three-node target from this repository and run the mix
 GOWORK=off go run ./cmd/wkbench run -scenario ./examples/wukongim-three-node-send-rate-mixed.yaml
 ```
 
+Sweep a three-node target to find the highest passing send-link QPS:
+
+```bash
+./scripts/bench-wukongim-three-node-send-rate-sweep.sh \
+  --mode mixed \
+  --rates 100,200,500 \
+  --duration 2m \
+  --no-start-target
+```
+
+For an end-to-end local run that starts and stops the three-node target:
+
+```bash
+./scripts/bench-wukongim-three-node-send-rate-sweep.sh \
+  --mode mixed \
+  --rates 10,20 \
+  --duration 5s \
+  --start-target \
+  --clean-target
+```
+
 ## Architecture Notes
 
 - `benchkit/contract` defines the stable Unit API.

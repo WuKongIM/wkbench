@@ -314,6 +314,25 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 	}
 }
 
+func TestReadmeDocumentsSendRateSweep(t *testing.T) {
+	root := filepath.Dir(filepath.Dir(scriptPath(t)))
+	data, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"bench-wukongim-three-node-send-rate-sweep.sh",
+		"--mode mixed",
+		"--rates 100,200,500",
+		"--duration 2m",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("README missing sweep usage %q", want)
+		}
+	}
+}
+
 func sweepScriptPath(t *testing.T) string {
 	t.Helper()
 	root := filepath.Dir(filepath.Dir(scriptPath(t)))
