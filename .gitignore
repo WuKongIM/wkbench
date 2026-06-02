@@ -1,4 +1,5 @@
 reports/
+data/
 tmp/
 .DS_Store
 .worktrees/

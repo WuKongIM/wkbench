@@ -111,6 +111,13 @@ WKBENCH_SCENARIO=/path/to/scenario.yaml ./scripts/smoke-wukongim-single-node.sh
 WKBENCH_SCENARIO=/path/to/scenario.yaml ./scripts/smoke-wukongim-send-rate-mixed.sh
 ```
 
+Start a local WuKongIM v2 three-node target from this repository and run the mixed send-rate scenario against all three nodes:
+
+```bash
+./scripts/start-wukongimv2-three-nodes.sh --clean
+GOWORK=off go run ./cmd/wkbench run -scenario ./examples/wukongim-three-node-send-rate-mixed.yaml
+```
+
 ## Architecture Notes
 
 - `benchkit/contract` defines the stable Unit API.

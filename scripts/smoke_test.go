@@ -62,6 +62,45 @@ func TestMixedSendRateSmokeScriptUsesMixedScenario(t *testing.T) {
 	}
 }
 
+func TestThreeNodeStartupScriptUsesSiblingWuKongIMRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash startup script is for unix-like developer environments")
+	}
+	root := filepath.Dir(filepath.Dir(scriptPath(t)))
+	script := filepath.Join(root, "scripts", "start-wukongimv2-three-nodes.sh")
+	cmd := exec.Command("bash", "-n", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bash -n failed: %v\n%s", err, out)
+	}
+
+	cmd = exec.Command("bash", script, "--dry-run", "--no-build")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run failed: %v\n%s", err, out)
+	}
+	text := string(out)
+	wukongRoot := filepath.Clean(filepath.Join(root, "..", "WuKongIM"))
+	for _, want := range []string{
+		"repo_root=" + wukongRoot,
+		"runtime_root=" + root,
+		"node1_config=" + filepath.Join(wukongRoot, "scripts", "wukongimv2", "wukongimv2-node1.conf"),
+		"node1_ready=http://127.0.0.1:5011/readyz",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, text)
+		}
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `GOWORK="${GOWORK:-off}" go build`) {
+		t.Fatalf("script should build WuKongIM with GOWORK defaulting to off")
+	}
+}
+
 func scriptPath(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
