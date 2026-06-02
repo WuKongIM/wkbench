@@ -106,8 +106,18 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 	}
 }
 
-func TestWriteDirIncludesWuKongIMMetricsSummary(t *testing.T) {
+func TestWriteDirIncludesNormalizedWuKongIMMetricsSummary(t *testing.T) {
 	dir := t.TempDir()
+	summary := wukongimport.MetricsSummary{
+		ScrapeTicks:     7,
+		SelectedSamples: 123,
+		Nodes: []wukongimport.NodeScrapeSummary{
+			{Address: "127.0.0.1:5300", Success: 6, Errors: 2},
+			{Address: "127.0.0.2:5300", Success: 5, Errors: 3},
+		},
+		LatencyP95MS: 8.12,
+		LatencyP99MS: 10.34,
+	}
 	result := kernel.Result{
 		RunID:  "demo",
 		Status: kernel.StatusCompleted,
@@ -117,17 +127,8 @@ func TestWriteDirIncludesWuKongIMMetricsSummary(t *testing.T) {
 				Status: kernel.StatusCompleted,
 				Outputs: map[string]kernel.OutputResult{
 					"summary": {
-						Type: wukongimport.MetricsSummaryV1,
-						Value: wukongimport.MetricsSummary{
-							ScrapeTicks:     7,
-							SelectedSamples: 123,
-							Nodes: []wukongimport.NodeScrapeSummary{
-								{Address: "127.0.0.1:5300", Success: 6, Errors: 2},
-								{Address: "127.0.0.2:5300", Success: 5, Errors: 3},
-							},
-							LatencyP95MS: 8.12,
-							LatencyP99MS: 10.34,
-						},
+						Type:  wukongimport.MetricsSummaryV1,
+						Value: summary.ReportOutput(),
 					},
 				},
 			},

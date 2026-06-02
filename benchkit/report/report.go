@@ -85,6 +85,11 @@ func formatOutput(name string, output kernel.OutputResult) string {
 	if output.Value == nil {
 		return prefix + "\n"
 	}
+	if output.Type == wukongimport.MetricsSummaryV1 {
+		if formatted, ok := formatWuKongIMMetricsSummary(output.Value); ok {
+			return prefix + ": " + formatted + "\n"
+		}
+	}
 	return prefix + ": " + formatOutputValue(output.Value) + "\n"
 }
 
@@ -93,17 +98,83 @@ func formatOutputValue(value any) string {
 	case trafficport.Summary:
 		return fmt.Sprintf("sendack_ok: `%d`, sendack_errors: `%d`, sendack_error_rate: `%.4f`, elapsed_ms: `%d`, actual_qps: `%.2f`, last_message_id: `%d`", v.SendackOK, v.SendackErrors, v.SendackErrorRate(), v.ElapsedMS, v.ActualQPS(), v.LastMessageID)
 	case wukongimport.MetricsSummary:
-		var errors int64
-		for _, node := range v.Nodes {
-			errors += node.Errors
-		}
-		return fmt.Sprintf("scrapes: `%d`, errors: `%d`, samples: `%d`, latency_p95: `%.2fms`, latency_p99: `%.2fms`", v.ScrapeTicks, errors, v.SelectedSamples, v.LatencyP95MS, v.LatencyP99MS)
+		formatted, _ := formatWuKongIMMetricsSummary(v)
+		return formatted
 	default:
 		data, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Sprintf("value: `%v`", value)
 		}
 		return fmt.Sprintf("value: `%s`", data)
+	}
+}
+
+func formatWuKongIMMetricsSummary(value any) (string, bool) {
+	var scrapes, samples, errors int64
+	var p95, p99 float64
+
+	switch v := value.(type) {
+	case wukongimport.MetricsSummary:
+		scrapes = v.ScrapeTicks
+		samples = v.SelectedSamples
+		p95 = v.LatencyP95MS
+		p99 = v.LatencyP99MS
+		for _, node := range v.Nodes {
+			errors += node.Errors
+		}
+	case map[string]any:
+		scrapes = int64Value(v["scrape_ticks"])
+		samples = int64Value(v["selected_samples"])
+		p95 = float64Value(v["latency_p95_ms"])
+		p99 = float64Value(v["latency_p99_ms"])
+		errors = wukongIMMetricsSummaryErrors(v["nodes"])
+	default:
+		return "", false
+	}
+
+	return fmt.Sprintf("scrapes: `%d`, errors: `%d`, samples: `%d`, latency_p95: `%.2fms`, latency_p99: `%.2fms`", scrapes, errors, samples, p95, p99), true
+}
+
+func wukongIMMetricsSummaryErrors(nodes any) int64 {
+	var errors int64
+	switch v := nodes.(type) {
+	case []wukongimport.NodeScrapeSummary:
+		for _, node := range v {
+			errors += node.Errors
+		}
+	case []any:
+		for _, node := range v {
+			if fields, ok := node.(map[string]any); ok {
+				errors += int64Value(fields["errors"])
+			}
+		}
+	}
+	return errors
+}
+
+func int64Value(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func float64Value(value any) float64 {
+	switch v := value.(type) {
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case float64:
+		return v
+	default:
+		return 0
 	}
 }
 
