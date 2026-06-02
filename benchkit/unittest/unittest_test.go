@@ -23,7 +23,7 @@ func TestAssertUnitContractRejectsUnversionedKind(t *testing.T) {
 }
 
 func TestAssertUnitContractRejectsUnsafeArtifactNames(t *testing.T) {
-	for _, artifactName := range []string{".", "..", "foo/bar", "foo\\bar", "   "} {
+	for _, artifactName := range []string{".", "..", "foo/bar", "foo\\bar", "   ", " metrics.jsonl", "metrics.jsonl ", "metrics data.jsonl"} {
 		t.Run(artifactName, func(t *testing.T) {
 			tb := &spyTB{}
 			unittest.AssertUnitContract(tb, artifactNameUnit{name: artifactName})

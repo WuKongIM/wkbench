@@ -345,7 +345,7 @@ func TestEngineWritesDeclaredArtifacts(t *testing.T) {
 }
 
 func TestEngineRejectsUnsafeArtifactUnitName(t *testing.T) {
-	for _, unitName := range []string{"../outside", ".", "   "} {
+	for _, unitName := range []string{"../outside", ".", "   ", " metrics", "metrics ", "metrics unit"} {
 		t.Run(unitName, func(t *testing.T) {
 			reportDir := t.TempDir()
 			reg := registry.New()
@@ -382,7 +382,7 @@ func TestEngineRejectsUnsafeArtifactUnitName(t *testing.T) {
 }
 
 func TestEngineRejectsUnsafeArtifactName(t *testing.T) {
-	for _, artifactName := range []string{".", "   ", "..", "../outside", "foo/bar", "foo\\bar"} {
+	for _, artifactName := range []string{".", "   ", " metrics.jsonl", "metrics.jsonl ", "metrics data.jsonl", "..", "../outside", "foo/bar", "foo\\bar"} {
 		t.Run(artifactName, func(t *testing.T) {
 			reg := registry.New()
 			reg.MustRegister(artifactNameUnit{kind: "test.unsafe_artifact_name/v1", artifactName: artifactName})

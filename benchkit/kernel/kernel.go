@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
@@ -962,7 +963,7 @@ func validateArtifactName(name string) error {
 		return fmt.Errorf("artifact name is required")
 	}
 	trimmed := strings.TrimSpace(name)
-	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	if trimmed == "" || trimmed == "." || containsWhitespace(name) || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("artifact %q must be a simple relative file name", name)
 	}
 	return nil
@@ -973,10 +974,19 @@ func validateArtifactUnitName(name string) error {
 		return fmt.Errorf("unit name is required to write artifacts")
 	}
 	trimmed := strings.TrimSpace(name)
-	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	if trimmed == "" || trimmed == "." || containsWhitespace(name) || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("unit name %q must be a simple artifact path segment", name)
 	}
 	return nil
+}
+
+func containsWhitespace(value string) bool {
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }
 
 type runArtifactWriter struct {

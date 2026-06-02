@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Kind is a versioned unit identifier such as traffic.group_send/v1.
@@ -415,10 +416,19 @@ func validateArtifactName(name string) error {
 		return fmt.Errorf("artifact name is required")
 	}
 	trimmed := strings.TrimSpace(name)
-	if trimmed == "" || trimmed == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+	if trimmed == "" || trimmed == "." || containsWhitespace(name) || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("artifact %q must be a simple relative file name", name)
 	}
 	return nil
+}
+
+func containsWhitespace(value string) bool {
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // NextID implements RunEnv.

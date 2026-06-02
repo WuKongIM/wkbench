@@ -119,7 +119,7 @@ func assertArtifacts(t TB, kind string, artifacts []contract.ArtifactDef) {
 			t.Fatalf("unit %q artifact name is required", kind)
 			return
 		}
-		if name == "." || strings.Contains(rawName, "..") || strings.ContainsAny(rawName, `/\`) {
+		if name == "." || containsWhitespace(rawName) || strings.Contains(rawName, "..") || strings.ContainsAny(rawName, `/\`) {
 			t.Fatalf("unit %q artifact %q must be a simple relative file name", kind, rawName)
 			return
 		}
@@ -129,6 +129,15 @@ func assertArtifacts(t TB, kind string, artifacts []contract.ArtifactDef) {
 		}
 		seen[name] = struct{}{}
 	}
+}
+
+func containsWhitespace(value string) bool {
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasVersionSuffix(kind string) bool {

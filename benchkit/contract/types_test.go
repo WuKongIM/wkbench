@@ -73,7 +73,7 @@ func TestTestRunEnvRejectsUndeclaredArtifact(t *testing.T) {
 }
 
 func TestTestRunEnvRejectsUnsafeDeclaredArtifactName(t *testing.T) {
-	for _, name := range []string{".", "   ", "..", "../outside", "foo/bar", "foo\\bar"} {
+	for _, name := range []string{".", "   ", " metrics.jsonl", "metrics.jsonl ", "metrics data.jsonl", "..", "../outside", "foo/bar", "foo\\bar"} {
 		t.Run(name, func(t *testing.T) {
 			env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
 			env.DeclareArtifacts([]contract.ArtifactDef{{Name: name}})
