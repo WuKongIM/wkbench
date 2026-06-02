@@ -352,12 +352,12 @@ func TestSendRateSweepDryRunMixedHasAggregateAndNoZeroRates(t *testing.T) {
 	if !strings.Contains(string(summary), "| `mixed` | `1` | `total` | `1` | `0.00` | `not-run`") {
 		t.Fatalf("mixed summary should include aggregate total row:\n%s", summary)
 	}
-	for _, want := range []string{"actual_qps", "latency_p95", "latency_p99"} {
+	for _, want := range []string{"total_target_qps", "target_qps", "actual_qps", "planned_messages", "completed_messages", "latency_p95", "latency_p99"} {
 		if !strings.Contains(string(summary), want) {
 			t.Fatalf("mixed summary should include %q column:\n%s", want, summary)
 		}
 	}
-	for _, bad := range []string{"queue_", "wire_", "latency_avg"} {
+	for _, bad := range []string{"offered_qps", "sendack_ok", "queue_", "wire_", "latency_avg"} {
 		if strings.Contains(string(summary), bad) {
 			t.Fatalf("mixed summary should not include %q column:\n%s", bad, summary)
 		}
@@ -409,13 +409,18 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 		`.units[$unit].outputs.summary.value.sendack_ok`,
 		`.units[$unit].outputs.summary.value.sendack_errors`,
 		`.units[$unit].outputs.summary.value.elapsed_ms`,
+		`.units[$unit].metrics.send_attempt_total.sum`,
 		`.units[$unit].metrics.sendack_latency.p95`,
 		`.units[$unit].metrics.sendack_latency.p99`,
+		`target_qps`,
+		`planned_messages`,
+		`completed_messages`,
 		`actual_qps`,
 		`p95_ms`,
 		`p99_ms`,
 		`summary.csv`,
 		`actual_qps`,
+		`total_target_qps`,
 		`latency_p95_ms`,
 		`latency_p99_ms`,
 		`latency_p95`,
@@ -439,6 +444,7 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 		`latency_max_ms`,
 		`queue_p95_ms`,
 		`wire_p95_ms`,
+		`offered_qps`,
 	} {
 		if strings.Contains(text, bad) {
 			t.Fatalf("sweep script should not extract or render %q", bad)

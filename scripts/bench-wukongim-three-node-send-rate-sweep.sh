@@ -464,24 +464,25 @@ extract_unit_row() {
   local unit="$2"
   local mode="$3"
   local total_qps="$4"
-  local offered_qps="$5"
+  local target_qps="$5"
   local status="$6"
   jq -r \
     --arg unit "$unit" \
     --arg mode "$mode" \
-    --arg total_qps "$total_qps" \
-    --arg offered_qps "$offered_qps" \
+    --arg total_target_qps "$total_qps" \
+    --arg target_qps "$target_qps" \
     --arg status "$status" \
     --arg report_dir "$(dirname "$report")" \
     '
     (.units[$unit].outputs.summary.value.sendack_ok // 0) as $ok
     | (.units[$unit].outputs.summary.value.sendack_errors // 0) as $errors
     | (.units[$unit].outputs.summary.value.elapsed_ms // 0) as $elapsed_ms
+    | (.units[$unit].metrics.send_attempt_total.sum // .units[$unit].metrics.send_attempt_total.count // ($ok + $errors)) as $planned
     | (($ok + $errors) | if . == 0 then 0 else ($errors / .) end) as $error_rate
     | (if $elapsed_ms == 0 then 0 else ($ok / ($elapsed_ms / 1000)) end) as $actual_qps
     | (.units[$unit].metrics.sendack_latency.p95 // 0) as $lat_p95
     | (.units[$unit].metrics.sendack_latency.p99 // 0) as $lat_p99
-    | [$mode, $total_qps, $unit, $offered_qps, $actual_qps, $status, $ok, $errors, $error_rate, ($lat_p95 * 1000), ($lat_p99 * 1000), $report_dir]
+    | [$mode, $total_target_qps, $unit, $target_qps, $actual_qps, $status, $planned, $ok, $errors, $error_rate, ($lat_p95 * 1000), ($lat_p99 * 1000), $report_dir]
     | @csv
     ' "$report"
 }
@@ -495,11 +496,12 @@ extract_unit_values() {
     (.units[$unit].outputs.summary.value.sendack_ok // 0) as $ok
     | (.units[$unit].outputs.summary.value.sendack_errors // 0) as $errors
     | (.units[$unit].outputs.summary.value.elapsed_ms // 0) as $elapsed_ms
+    | (.units[$unit].metrics.send_attempt_total.sum // .units[$unit].metrics.send_attempt_total.count // ($ok + $errors)) as $planned
     | (($ok + $errors) | if . == 0 then 0 else ($errors / .) end) as $error_rate
     | (if $elapsed_ms == 0 then 0 else ($ok / ($elapsed_ms / 1000)) end) as $actual_qps
     | (.units[$unit].metrics.sendack_latency.p95 // 0) as $lat_p95
     | (.units[$unit].metrics.sendack_latency.p99 // 0) as $lat_p99
-    | [$ok, $errors, $elapsed_ms, $error_rate, $actual_qps, ($lat_p95 * 1000), ($lat_p99 * 1000)]
+    | [$planned, $ok, $errors, $elapsed_ms, $error_rate, $actual_qps, ($lat_p95 * 1000), ($lat_p99 * 1000)]
     | @tsv
     ' "$report"
 }
@@ -507,11 +509,11 @@ extract_unit_values() {
 append_missing_unit_result() {
   local unit="$1"
   local total_qps="$2"
-  local offered_qps="$3"
+  local target_qps="$3"
   local status="$4"
   local step_dir="$5"
-  printf '%s,%s,%s,%s,0.00,%s,0,0,0,0,0,%s\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$OUT_DIR/summary.csv"
-  printf '| `%s` | `%s` | `%s` | `%s` | `0.00` | `%s` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
+  printf '%s,%s,%s,%s,0.00,%s,0,0,0,0,0,0,%s\n' "$MODE" "$total_qps" "$unit" "$target_qps" "$status" "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `%s` | `%s` | `0.00` | `%s` | `0` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$target_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
 error_rate_for_counts() {
@@ -542,22 +544,23 @@ actual_qps_for_counts() {
 append_total_result() {
   local total_qps="$1"
   local status="$2"
-  local ok="$3"
-  local errors="$4"
-  local actual_qps="$5"
-  local step_dir="$6"
+  local planned="$3"
+  local completed="$4"
+  local errors="$5"
+  local actual_qps="$6"
+  local step_dir="$7"
   local error_rate
-  error_rate="$(error_rate_for_counts "$ok" "$errors")"
-  printf '%s,%s,total,%s,%s,%s,%s,%s,%s,,,%s\n' "$MODE" "$total_qps" "$total_qps" "$actual_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$OUT_DIR/summary.csv"
-  printf '| `%s` | `%s` | `total` | `%s` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `n/a` | `n/a` | `%s` |\n' \
-    "$MODE" "$total_qps" "$total_qps" "$actual_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$SUMMARY_ROWS"
+  error_rate="$(error_rate_for_counts "$completed" "$errors")"
+  printf '%s,%s,total,%s,%s,%s,%s,%s,%s,%s,,,%s\n' "$MODE" "$total_qps" "$total_qps" "$actual_qps" "$status" "$planned" "$completed" "$errors" "$error_rate" "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `total` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `n/a` | `n/a` | `%s` |\n' \
+    "$MODE" "$total_qps" "$total_qps" "$actual_qps" "$status" "$planned" "$completed" "$errors" "$error_rate" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
 unit_counts_elapsed() {
   local report="$1"
   local unit="$2"
   if [[ ! -f "$report" ]]; then
-    printf '0 0 0\n'
+    printf '0 0 0 0\n'
     return
   fi
   jq -r \
@@ -565,7 +568,8 @@ unit_counts_elapsed() {
     '[
       (.units[$unit].outputs.summary.value.sendack_ok // 0),
       (.units[$unit].outputs.summary.value.sendack_errors // 0),
-      (.units[$unit].outputs.summary.value.elapsed_ms // 0)
+      (.units[$unit].outputs.summary.value.elapsed_ms // 0),
+      (.units[$unit].metrics.send_attempt_total.sum // .units[$unit].metrics.send_attempt_total.count // ((.units[$unit].outputs.summary.value.sendack_ok // 0) + (.units[$unit].outputs.summary.value.sendack_errors // 0)))
     ] | @tsv' "$report"
 }
 
@@ -573,65 +577,66 @@ append_unit_result() {
   local report="$1"
   local unit="$2"
   local total_qps="$3"
-  local offered_qps="$4"
+  local target_qps="$4"
   local status="$5"
   local step_dir="$6"
-  local values ok errors elapsed_ms error_rate actual_qps p95_ms p99_ms
+  local values planned completed errors elapsed_ms error_rate actual_qps p95_ms p99_ms
 
   if [[ ! -f "$report" ]]; then
-    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "$status" "$step_dir"
+    append_missing_unit_result "$unit" "$total_qps" "$target_qps" "$status" "$step_dir"
     return
   fi
 
-  extract_unit_row "$report" "$unit" "$MODE" "$total_qps" "$offered_qps" "$status" >> "$OUT_DIR/summary.csv"
+  extract_unit_row "$report" "$unit" "$MODE" "$total_qps" "$target_qps" "$status" >> "$OUT_DIR/summary.csv"
   values="$(extract_unit_values "$report" "$unit" || true)"
   if [[ -z "$values" ]]; then
-    values=$'0\t0\t0\t0\t0\t0\t0'
+    values=$'0\t0\t0\t0\t0\t0\t0\t0'
   fi
-  IFS=$'\t' read -r ok errors elapsed_ms error_rate actual_qps p95_ms p99_ms <<< "$values"
-  printf '| `%s` | `%s` | `%s` | `%s` | `%.2f` | `%s` | `%s` | `%s` | `%.6f` | `%.2fms` | `%.2fms` | `%s` |\n' \
-    "$MODE" "$total_qps" "$unit" "$offered_qps" "$actual_qps" "$status" "$ok" "$errors" "$error_rate" "$p95_ms" "$p99_ms" "$step_dir" >> "$SUMMARY_ROWS"
+  IFS=$'\t' read -r planned completed errors elapsed_ms error_rate actual_qps p95_ms p99_ms <<< "$values"
+  printf '| `%s` | `%s` | `%s` | `%s` | `%.2f` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `%.2fms` | `%.2fms` | `%s` |\n' \
+    "$MODE" "$total_qps" "$unit" "$target_qps" "$actual_qps" "$status" "$planned" "$completed" "$errors" "$error_rate" "$p95_ms" "$p99_ms" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
 append_step_results() {
   local step_dir="$1"
   local total_qps="$2"
   local status="$3"
-  local pair unit offered_qps workload_dir report
-  local total_ok=0 total_errors=0 max_elapsed_ms=0 ok errors elapsed_ms actual_qps
+  local pair unit target_qps workload_dir report
+  local total_planned=0 total_completed=0 total_errors=0 max_elapsed_ms=0 completed errors elapsed_ms planned actual_qps
   while IFS= read -r pair; do
     [[ -n "$pair" ]] || continue
     unit="${pair%%:*}"
-    offered_qps="${pair##*:}"
+    target_qps="${pair##*:}"
     workload_dir="$(workload_dir_for_unit "$step_dir" "$unit")"
     report="$workload_dir/report.json"
-    append_unit_result "$report" "$unit" "$total_qps" "$offered_qps" "$status" "$workload_dir"
-    read -r ok errors elapsed_ms < <(unit_counts_elapsed "$report" "$unit")
-    total_ok=$((total_ok + ok))
+    append_unit_result "$report" "$unit" "$total_qps" "$target_qps" "$status" "$workload_dir"
+    read -r completed errors elapsed_ms planned < <(unit_counts_elapsed "$report" "$unit")
+    total_planned=$((total_planned + planned))
+    total_completed=$((total_completed + completed))
     total_errors=$((total_errors + errors))
     if (( elapsed_ms > max_elapsed_ms )); then
       max_elapsed_ms="$elapsed_ms"
     fi
   done < <(offered_rates_for_mode "$total_qps")
   if [[ "$MODE" == "mixed" ]]; then
-    actual_qps="$(actual_qps_for_counts "$total_ok" "$max_elapsed_ms")"
-    append_total_result "$total_qps" "$status" "$total_ok" "$total_errors" "$actual_qps" "$step_dir"
+    actual_qps="$(actual_qps_for_counts "$total_completed" "$max_elapsed_ms")"
+    append_total_result "$total_qps" "$status" "$total_planned" "$total_completed" "$total_errors" "$actual_qps" "$step_dir"
   fi
 }
 
 append_not_run_results() {
   local step_dir="$1"
   local total_qps="$2"
-  local pair unit offered_qps workload_dir
+  local pair unit target_qps workload_dir
   while IFS= read -r pair; do
     [[ -n "$pair" ]] || continue
     unit="${pair%%:*}"
-    offered_qps="${pair##*:}"
+    target_qps="${pair##*:}"
     workload_dir="$(workload_dir_for_unit "$step_dir" "$unit")"
-    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "not-run" "$workload_dir"
+    append_missing_unit_result "$unit" "$total_qps" "$target_qps" "not-run" "$workload_dir"
   done < <(offered_rates_for_mode "$total_qps")
   if [[ "$MODE" == "mixed" ]]; then
-    append_total_result "$total_qps" "not-run" 0 0 "0.00" "$step_dir"
+    append_total_result "$total_qps" "not-run" 0 0 0 "0.00" "$step_dir"
   fi
 }
 
@@ -646,8 +651,8 @@ write_summary_markdown() {
     printf -- '- status: `%s`\n' "$status"
     printf -- '- highest_passing_qps: `%s`\n' "$highest_passing_qps"
     printf -- '- first_failing_qps: `%s`\n\n' "$first_failing_qps"
-    printf '| mode | total_qps | workload | offered_qps | actual_qps | status | sendack_ok | sendack_errors | error_rate | latency_p95 | latency_p99 | report_dir |\n'
-    printf '| --- | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |\n'
+    printf '| mode | total_target_qps | workload | target_qps | actual_qps | status | planned_messages | completed_messages | sendack_errors | error_rate | latency_p95 | latency_p99 | report_dir |\n'
+    printf '| --- | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n'
     cat "$SUMMARY_ROWS"
   } > "$OUT_DIR/summary.md"
 }
@@ -778,7 +783,7 @@ fi
 mkdir -p "$OUT_DIR/steps"
 SUMMARY_ROWS="$OUT_DIR/.summary-rows.md"
 : > "$SUMMARY_ROWS"
-printf 'mode,total_qps,workload,offered_qps,actual_qps,status,sendack_ok,sendack_errors,error_rate,latency_p95_ms,latency_p99_ms,report_dir\n' > "$OUT_DIR/summary.csv"
+printf 'mode,total_target_qps,workload,target_qps,actual_qps,status,planned_messages,completed_messages,sendack_errors,error_rate,latency_p95_ms,latency_p99_ms,report_dir\n' > "$OUT_DIR/summary.csv"
 
 IFS=',' read -r -a RATE_VALUES <<< "$RATES"
 step_index=0
