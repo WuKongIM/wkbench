@@ -912,6 +912,9 @@ func (e *runEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	if err := validateArtifactName(name); err != nil {
 		return nil, err
 	}
+	if err := validateArtifactUnitName(e.unitName); err != nil {
+		return nil, err
+	}
 	reportDir := strings.TrimSpace(e.scenario.Run.ReportDir)
 	if reportDir == "" {
 		return nil, fmt.Errorf("scenario run.report_dir is required to write artifact %q", name)
@@ -960,6 +963,16 @@ func validateArtifactName(name string) error {
 	}
 	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("artifact %q must be a simple relative file name", name)
+	}
+	return nil
+}
+
+func validateArtifactUnitName(name string) error {
+	if name == "" {
+		return fmt.Errorf("unit name is required to write artifacts")
+	}
+	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("unit name %q must be a simple artifact path segment", name)
 	}
 	return nil
 }

@@ -343,6 +343,39 @@ func TestEngineWritesDeclaredArtifacts(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsUnsafeArtifactUnitName(t *testing.T) {
+	reportDir := t.TempDir()
+	reg := registry.New()
+	reg.MustRegister(artifactMetricsUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "artifact-unsafe-unit", ReportDir: reportDir},
+		Units: map[string]dsl.UnitNode{
+			"../outside": {Use: "test.artifact_metrics/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected unsafe unit name error")
+	}
+	if !strings.Contains(err.Error(), "unit name") || !strings.Contains(err.Error(), "path segment") {
+		t.Fatalf("error = %q, want unit name path segment", err.Error())
+	}
+	if result.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", result.Status)
+	}
+	unit := result.Units["../outside"]
+	if unit.Status != kernel.StatusWorkerFailed ||
+		!strings.Contains(unit.Error, "unit name") ||
+		!strings.Contains(unit.Error, "path segment") {
+		t.Fatalf("unexpected failed unit: %#v", unit)
+	}
+	outsidePath := filepath.Join(reportDir, "outside", "metrics.jsonl")
+	if _, statErr := os.Stat(outsidePath); !os.IsNotExist(statErr) {
+		t.Fatalf("outside artifact file exists or stat failed unexpectedly: %v", statErr)
+	}
+}
+
 func TestEngineRejectsUndeclaredArtifact(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(undeclaredArtifactUnit{})
