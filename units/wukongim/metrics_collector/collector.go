@@ -234,7 +234,13 @@ func (c *collector) scrapeNode(ctx context.Context, index int, addr string) node
 		return nodeScrapeResult{record: record, err: err}
 	}
 
-	samples, parseErrors := parsePrometheusReader(resp.Body, c.filter)
+	samples, parseErrors, err := parsePrometheusReader(resp.Body, c.filter)
+	if err != nil {
+		record.DurationMS = durationMS(time.Since(started))
+		record.Status = "error"
+		record.Error = err.Error()
+		return nodeScrapeResult{record: record, err: err}
+	}
 	sortMetricSamples(samples)
 	record.DurationMS = durationMS(time.Since(started))
 	record.Samples = samples

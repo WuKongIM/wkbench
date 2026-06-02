@@ -261,7 +261,10 @@ ignored_metric 9
 	if err != nil {
 		t.Fatalf("new filter: %v", err)
 	}
-	samples, parseErrors := parsePrometheusReader(bytes.NewReader(raw), filter)
+	samples, parseErrors, err := parsePrometheusReader(bytes.NewReader(raw), filter)
+	if err != nil {
+		t.Fatalf("parse reader: %v", err)
+	}
 	if parseErrors != 1 {
 		t.Fatalf("parse errors = %d, want 1", parseErrors)
 	}
@@ -394,6 +397,72 @@ func TestParseErrorsAreNonFatalByDefaultAndFatalInStrictMode(t *testing.T) {
 	}
 	if got := strictEnv.CounterValue("scrape_parse_error_total"); got != 1 {
 		t.Fatalf("strict parse error counter = %v, want 1", got)
+	}
+}
+
+func TestBodyReadErrorIsScrapeErrorAndStrictFatal(t *testing.T) {
+	nonstrictRequested := make(chan struct{}, 1)
+	nonstrictServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTruncatedMetricsResponse(w)
+		select {
+		case nonstrictRequested <- struct{}{}:
+		default:
+		}
+	}))
+	defer nonstrictServer.Close()
+
+	nonstrictEnv := newCollectorEnv(map[string]any{"interval": "1h"}, targetport.Target{APIAddrs: []string{nonstrictServer.URL}})
+	nonstrictTask, err := Unit{}.Start(context.Background(), nonstrictEnv)
+	if err != nil {
+		t.Fatalf("Start non-strict: %v", err)
+	}
+	waitForRequest(t, nonstrictRequested)
+	waitForCounter(t, nonstrictEnv, "scrape_error_total", 1)
+	if err := nonstrictTask.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop non-strict: %v", err)
+	}
+
+	if got := nonstrictEnv.CounterValue("scrape_success_total"); got != 0 {
+		t.Fatalf("success counter = %v, want 0", got)
+	}
+	if got := nonstrictEnv.CounterValue("scrape_parse_error_total"); got != 0 {
+		t.Fatalf("parse error counter = %v, want 0", got)
+	}
+	summary := outputSummary(t, nonstrictEnv)
+	if len(summary.Nodes) != 1 || summary.Nodes[0].Errors != 1 || summary.Nodes[0].Success != 0 {
+		t.Fatalf("nodes = %#v", summary.Nodes)
+	}
+	record := firstArtifactRecord(t, nonstrictEnv)
+	if record["status"] != "error" {
+		t.Fatalf("record status = %#v, want error in %#v", record["status"], record)
+	}
+
+	strictRequested := make(chan struct{}, 1)
+	strictServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTruncatedMetricsResponse(w)
+		select {
+		case strictRequested <- struct{}{}:
+		default:
+		}
+	}))
+	defer strictServer.Close()
+
+	strictEnv := newCollectorEnv(map[string]any{
+		"interval":               "1h",
+		"fail_on_scrape_error":   true,
+		"max_consecutive_errors": 1,
+	}, targetport.Target{APIAddrs: []string{strictServer.URL}})
+	strictTask, err := Unit{}.Start(context.Background(), strictEnv)
+	if err != nil {
+		t.Fatalf("Start strict: %v", err)
+	}
+	waitForRequest(t, strictRequested)
+	fatal := waitForFatal(t, strictTask.Done())
+	if !strings.Contains(fatal.Error(), "scrape") {
+		t.Fatalf("fatal error = %v, want scrape", fatal)
+	}
+	if err := strictTask.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop strict: %v", err)
 	}
 }
 
@@ -828,6 +897,31 @@ func waitForCounter(t *testing.T, env *contract.TestRunEnv, name string, want fl
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("counter %q = %v, want at least %v", name, env.CounterValue(name), want)
+}
+
+func firstArtifactRecord(t *testing.T, env *contract.TestRunEnv) map[string]any {
+	t.Helper()
+	info := env.Artifacts()["metrics.jsonl"]
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatalf("artifact has no JSONL records: %q", data)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("artifact line is not JSON: %v\n%s", err, lines[0])
+	}
+	return record
+}
+
+func writeTruncatedMetricsResponse(w http.ResponseWriter) {
+	body := []byte("wk_messages_total 1\nwk_channels 2\n")
+	w.Header().Set("Content-Length", "4096")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func sameLabelSets(got, want []map[string]string) bool {
