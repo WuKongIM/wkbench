@@ -377,6 +377,47 @@ func TestEngineClosesExecutedOutputsWhenLaterUnitFails(t *testing.T) {
 	}
 }
 
+func TestEngineRecordsUnitTimeline(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(timelineUnit{})
+	scenario := dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "timeline"},
+		Units: map[string]dsl.UnitNode{
+			"work": {Use: "test.timeline/v1"},
+		},
+	}
+
+	result, err := kernel.New(reg).Run(context.Background(), scenario)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	unit := result.Units["work"]
+	if unit.StartedAt == "" {
+		t.Fatalf("StartedAt is empty")
+	}
+	if unit.EndedAt == "" {
+		t.Fatalf("EndedAt is empty")
+	}
+	if unit.ElapsedMS <= 0 {
+		t.Fatalf("ElapsedMS = %d, want positive", unit.ElapsedMS)
+	}
+}
+
+type timelineUnit struct{}
+
+func (timelineUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.timeline/v1"}
+}
+func (timelineUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (timelineUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (timelineUnit) Run(context.Context, contract.RunEnv) error {
+	time.Sleep(time.Millisecond)
+	return nil
+}
+
 const testValuePort = contract.PortType("port.test.value/v1")
 
 type sourceUnit struct {

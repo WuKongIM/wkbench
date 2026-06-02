@@ -62,6 +62,12 @@ type UnitResult struct {
 	Outputs map[string]OutputResult `json:"outputs,omitempty"`
 	// Metrics lists aggregated metrics emitted by the unit.
 	Metrics map[string]MetricResult `json:"metrics,omitempty"`
+	// StartedAt is the RFC3339Nano timestamp when runtime work started.
+	StartedAt string `json:"started_at,omitempty"`
+	// EndedAt is the RFC3339Nano timestamp when runtime work ended.
+	EndedAt string `json:"ended_at,omitempty"`
+	// ElapsedMS is the runtime elapsed wall time in milliseconds.
+	ElapsedMS int64 `json:"elapsed_ms,omitempty"`
 	// Cleanup lists non-fatal cleanup results for closeable outputs.
 	Cleanup []CleanupResult `json:"cleanup,omitempty"`
 }
@@ -281,22 +287,32 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			outputs:  outputs,
 			metrics:  newMetricStore(node.def.Metrics),
 		}
-		if err := node.unit.Run(ctx, env); err != nil {
+		start := time.Now()
+		err := node.unit.Run(ctx, env)
+		end := time.Now()
+		startedAt, endedAt, elapsedMS := timelineFields(start, end)
+		if err != nil {
 			result.Status = StatusWorkerFailed
 			result.Units[name] = UnitResult{
-				Kind:    node.def.Kind,
-				Status:  StatusWorkerFailed,
-				Error:   err.Error(),
-				Metrics: env.metrics.results(),
+				Kind:      node.def.Kind,
+				Status:    StatusWorkerFailed,
+				Error:     err.Error(),
+				Metrics:   env.metrics.results(),
+				StartedAt: startedAt,
+				EndedAt:   endedAt,
+				ElapsedMS: elapsedMS,
 			}
 			cleanup()
 			return result, fmt.Errorf("unit %q run: %w", name, err)
 		}
 		result.Units[name] = UnitResult{
-			Kind:    node.def.Kind,
-			Status:  StatusCompleted,
-			Outputs: outputs.resultsForUnit(name, node.def.Outputs),
-			Metrics: env.metrics.results(),
+			Kind:      node.def.Kind,
+			Status:    StatusCompleted,
+			Outputs:   outputs.resultsForUnit(name, node.def.Outputs),
+			Metrics:   env.metrics.results(),
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+			ElapsedMS: elapsedMS,
 		}
 	}
 	cleanup()
@@ -333,6 +349,14 @@ func explainPorts(defs []contract.PortDef) []ExplainPort {
 		ports = append(ports, ExplainPort{Name: def.Name, Type: def.Type, Optional: def.Optional})
 	}
 	return ports
+}
+
+func timelineFields(start, end time.Time) (string, string, int64) {
+	elapsed := end.Sub(start).Milliseconds()
+	if elapsed < 1 && end.After(start) {
+		elapsed = 1
+	}
+	return start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano), elapsed
 }
 
 type graph struct {

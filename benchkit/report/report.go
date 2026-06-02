@@ -45,6 +45,9 @@ func summaryMarkdown(result kernel.Result) string {
 	for _, name := range unitNames {
 		unit := result.Units[name]
 		out += fmt.Sprintf("- `%s` `%s` `%s`\n", name, unit.Kind, unit.Status)
+		if unit.ElapsedMS > 0 {
+			out += fmt.Sprintf("  - timing: elapsed `%dms`, started `%s`, ended `%s`\n", unit.ElapsedMS, unit.StartedAt, unit.EndedAt)
+		}
 		outputNames := make([]string, 0, len(unit.Outputs))
 		for outputName := range unit.Outputs {
 			outputNames = append(outputNames, outputName)
