@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -557,6 +559,64 @@ func TestScrapesAddressesConcurrentlyWithinTick(t *testing.T) {
 	}
 }
 
+func TestCollectorStopDuringInFlightScrapeFlushesRecords(t *testing.T) {
+	fastRead := make(chan struct{}, 1)
+	slowStarted := make(chan struct{}, 1)
+	target := targetport.Target{APIAddrs: []string{"http://fast.local", "http://slow.local"}}
+	env := newCollectorEnv(map[string]any{"interval": "1h"}, target)
+	artifact, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	spec := collectorSpec{
+		Interval:          contract.Duration{Duration: time.Hour},
+		Timeout:           contract.Duration{Duration: time.Hour},
+		Path:              defaultPath,
+		MaxSummaryMetrics: defaultMaxSummaryMetrics,
+	}
+	filter, err := newMetricFilter(spec)
+	if err != nil {
+		t.Fatalf("new filter: %v", err)
+	}
+	task := newCollector(env, target, spec, filter, artifact)
+	task.client = &http.Client{Transport: stopDuringScrapeTransport{
+		fastRead:    fastRead,
+		slowStarted: slowStarted,
+	}}
+	task.start(context.Background())
+
+	waitForRequest(t, slowStarted)
+	waitForRequest(t, fastRead)
+
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := env.CounterValue("scrape_success_total"); got != 1 {
+		t.Fatalf("success counter = %v, want 1", got)
+	}
+	if got := env.CounterValue("scrape_error_total"); got != 1 {
+		t.Fatalf("error counter = %v, want 1", got)
+	}
+	summary := outputSummary(t, env)
+	if summary.ScrapeTicks != 1 || summary.SelectedSamples != 1 {
+		t.Fatalf("summary counts = %#v", summary)
+	}
+	assertNodeSummary(t, summary, "http://fast.local", 1, 0)
+	assertNodeSummary(t, summary, "http://slow.local", 0, 1)
+
+	records := artifactRecords(t, env)
+	if len(records) != 2 {
+		t.Fatalf("artifact records = %#v, want two records", records)
+	}
+	if records[0]["address"] != "http://fast.local" || records[0]["status"] != "success" {
+		t.Fatalf("first record = %#v, want fast success", records[0])
+	}
+	if records[1]["address"] != "http://slow.local" || records[1]["status"] != "error" {
+		t.Fatalf("second record = %#v, want slow error", records[1])
+	}
+}
+
 func TestNonStrictScrapeErrorsAreCountedAndNonfatal(t *testing.T) {
 	env := newCollectorEnv(map[string]any{
 		"interval": "1h",
@@ -901,6 +961,15 @@ func waitForCounter(t *testing.T, env *contract.TestRunEnv, name string, want fl
 
 func firstArtifactRecord(t *testing.T, env *contract.TestRunEnv) map[string]any {
 	t.Helper()
+	records := artifactRecords(t, env)
+	if len(records) == 0 {
+		t.Fatalf("artifact has no JSONL records")
+	}
+	return records[0]
+}
+
+func artifactRecords(t *testing.T, env *contract.TestRunEnv) []map[string]any {
+	t.Helper()
 	info := env.Artifacts()["metrics.jsonl"]
 	data, err := os.ReadFile(info.Path)
 	if err != nil {
@@ -910,11 +979,15 @@ func firstArtifactRecord(t *testing.T, env *contract.TestRunEnv) map[string]any 
 	if len(lines) == 0 || lines[0] == "" {
 		t.Fatalf("artifact has no JSONL records: %q", data)
 	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
-		t.Fatalf("artifact line is not JSON: %v\n%s", err, lines[0])
+	records := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("artifact line is not JSON: %v\n%s", err, line)
+		}
+		records = append(records, record)
 	}
-	return record
+	return records
 }
 
 func writeTruncatedMetricsResponse(w http.ResponseWriter) {
@@ -922,6 +995,53 @@ func writeTruncatedMetricsResponse(w http.ResponseWriter) {
 	w.Header().Set("Content-Length", "4096")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+type stopDuringScrapeTransport struct {
+	fastRead    chan struct{}
+	slowStarted chan struct{}
+}
+
+func (t stopDuringScrapeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	switch req.URL.Host {
+	case "fast.local":
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       &signalingReadCloser{reader: strings.NewReader("wk_fast_total 1\n"), done: t.fastRead},
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	case "slow.local":
+		signal(t.slowStarted)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	default:
+		return nil, fmt.Errorf("unexpected host %q", req.URL.Host)
+	}
+}
+
+type signalingReadCloser struct {
+	reader *strings.Reader
+	done   chan struct{}
+}
+
+func (r *signalingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF {
+		signal(r.done)
+	}
+	return n, err
+}
+
+func (r *signalingReadCloser) Close() error {
+	return nil
+}
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
 }
 
 func sameLabelSets(got, want []map[string]string) bool {
@@ -956,4 +1076,18 @@ func sameStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func assertNodeSummary(t *testing.T, summary wukongimport.MetricsSummary, address string, successes, errors int64) {
+	t.Helper()
+	for _, node := range summary.Nodes {
+		if node.Address != address {
+			continue
+		}
+		if node.Success != successes || node.Errors != errors {
+			t.Fatalf("node %q = %#v, want success=%d errors=%d", address, node, successes, errors)
+		}
+		return
+	}
+	t.Fatalf("node %q missing from %#v", address, summary.Nodes)
 }

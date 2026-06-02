@@ -178,10 +178,6 @@ func (c *collector) scrapeTick(ctx context.Context) (bool, error) {
 	}
 	wg.Wait()
 
-	if ctx.Err() != nil {
-		return false, nil
-	}
-
 	hadScrapeError := false
 	for index, result := range results {
 		if err := c.writeRecord(result.record); err != nil {
