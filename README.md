@@ -128,6 +128,8 @@ Sweep a three-node target to find the highest passing send-link QPS:
   --no-start-target
 ```
 
+In `mixed` mode, the script runs person and group sub-scenarios concurrently and reports both per-workload rows plus an aggregate `total` row.
+
 For an end-to-end local run that starts and stops the three-node target:
 
 ```bash

@@ -61,6 +61,60 @@ units:
 	}
 }
 
+func TestRunCommandWritesReportOnAssertionFailure(t *testing.T) {
+	dir := t.TempDir()
+	scenarioPath := filepath.Join(dir, "scenario.yaml")
+	reportDir := filepath.Join(dir, "report")
+	scenario := `
+version: wkbench/v2
+run:
+  id: cli-failed-report
+  duration: 1s
+  report_dir: ` + reportDir + `
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    spec:
+      rate: 2/s
+      payload_size: 16
+  limits:
+    use: report.assert
+    inputs:
+      summary: traffic.summary
+    spec:
+      rules:
+        - metric: sendack_error_rate
+          op: eq
+          value: 1
+`
+	if err := os.WriteFile(scenarioPath, []byte(scenario), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"run", "-scenario", scenarioPath}, &stderr)
+	if code != exitRun {
+		t.Fatalf("expected exitRun, got %d: %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, "report.json"))
+	if err != nil {
+		t.Fatalf("failed run should still write report.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"traffic"`) || !strings.Contains(string(data), `"sendack_success_total"`) {
+		t.Fatalf("failed report should include completed traffic metrics:\n%s", data)
+	}
+	if !strings.Contains(stderr.String(), "run failed:") {
+		t.Fatalf("expected run failed message, got %q", stderr.String())
+	}
+}
+
 func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 	var stderr bytes.Buffer
 	code := runWithStderr([]string{"list-units"}, &stderr)

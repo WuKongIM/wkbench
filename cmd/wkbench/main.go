@@ -208,15 +208,15 @@ func runScenario(reg *registry.Registry, args []string, stderr io.Writer) int {
 		return code
 	}
 	result, err := kernel.New(reg).Run(context.Background(), scenario)
-	if err != nil {
-		fmt.Fprintf(stderr, "run failed: %v\n", err)
-		return exitRun
-	}
 	if scenario.Run.ReportDir != "" {
 		if err := report.WriteDir(scenario.Run.ReportDir, result); err != nil {
 			fmt.Fprintf(stderr, "report write failed: %v\n", err)
 			return exitInternal
 		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "run failed: %v\n", err)
+		return exitRun
 	}
 	fmt.Fprintln(stderr, "wkbench run completed")
 	return exitOK

@@ -149,9 +149,25 @@ split_rates() {
   group_weight="${MIXED_RATIO##*:}"
   require_positive_uint "--mixed-ratio person weight" "$person_weight"
   require_positive_uint "--mixed-ratio group weight" "$group_weight"
+  if (( total == 1 )); then
+    if (( person_weight >= group_weight )); then
+      printf '1 0\n'
+    else
+      printf '0 1\n'
+    fi
+    return
+  fi
   weight_sum=$((person_weight + group_weight))
   person_rate="$((total * person_weight / weight_sum))"
   group_rate="$((total - person_rate))"
+  if (( person_rate == 0 )); then
+    person_rate=1
+    group_rate=$((total - 1))
+  fi
+  if (( group_rate == 0 )); then
+    group_rate=1
+    person_rate=$((total - 1))
+  fi
   printf '%s %s\n' "$person_rate" "$group_rate"
 }
 
@@ -164,6 +180,7 @@ step_dir_for() {
 render_common_prefix() {
   local run_id="$1"
   local report_dir="$2"
+  local identity_prefix="$3"
   cat <<YAML
 version: wkbench/v2
 
@@ -191,9 +208,9 @@ units:
     use: identity.pool
     spec:
       total: $USERS
-      uid_prefix: sweep-u
-      device_prefix: sweep-d
-      token_prefix: sweep-token
+      uid_prefix: sweep-$identity_prefix-u
+      device_prefix: sweep-$identity_prefix-d
+      token_prefix: sweep-$identity_prefix-token
 
   tokens:
     use: wukongim.prepare_tokens
@@ -228,7 +245,8 @@ YAML
 }
 
 render_sessions() {
-  case "$MODE" in
+  local scenario_mode="$1"
+  case "$scenario_mode" in
     person)
       cat <<YAML
   sessions:
@@ -313,31 +331,47 @@ YAML
 }
 
 render_scenario() {
-  local index="$1"
-  local total_rate="$2"
-  local step_dir="$3"
-  local run_id="send-rate-sweep-${MODE}-${index}-${total_rate}qps"
-  local person_rate group_rate
+  local scenario_mode="$1"
+  local index="$2"
+  local rate="$3"
+  local report_dir="$4"
+  local run_id="send-rate-sweep-${scenario_mode}-${index}-${rate}qps"
 
-  render_common_prefix "$run_id" "$step_dir"
-  case "$MODE" in
+  render_common_prefix "$run_id" "$report_dir" "$scenario_mode"
+  case "$scenario_mode" in
     person)
       render_person_prep
-      render_sessions
-      render_person_traffic "$total_rate"
+      render_sessions "$scenario_mode"
+      render_person_traffic "$rate"
       ;;
     group)
       render_group_prep
-      render_sessions
-      render_group_traffic "$total_rate"
+      render_sessions "$scenario_mode"
+      render_group_traffic "$rate"
+      ;;
+  esac
+}
+
+render_step_scenarios() {
+  local index="$1"
+  local total_rate="$2"
+  local step_dir="$3"
+  local person_rate group_rate
+  local group_dir person_dir
+  case "$MODE" in
+    person|group)
+      render_scenario "$MODE" "$index" "$total_rate" "$step_dir" > "$step_dir/scenario.yaml"
       ;;
     mixed)
       read -r person_rate group_rate < <(split_rates "$total_rate")
-      render_group_prep
-      render_person_prep
-      render_sessions
-      render_group_traffic "$group_rate"
-      render_person_traffic "$person_rate"
+      if (( group_rate > 0 )); then
+        mkdir -p "$step_dir/group"
+        render_scenario "group" "$index" "$group_rate" "$step_dir/group" > "$step_dir/group/scenario.yaml"
+      fi
+      if (( person_rate > 0 )); then
+        mkdir -p "$step_dir/person"
+        render_scenario "person" "$index" "$person_rate" "$step_dir/person" > "$step_dir/person/scenario.yaml"
+      fi
       ;;
   esac
 }
@@ -354,8 +388,73 @@ offered_rates_for_mode() {
       ;;
     mixed)
       read -r person_rate group_rate < <(split_rates "$total_rate")
-      printf 'group_traffic:%s\n' "$group_rate"
-      printf 'person_traffic:%s\n' "$person_rate"
+      if (( group_rate > 0 )); then
+        printf 'group_traffic:%s\n' "$group_rate"
+      fi
+      if (( person_rate > 0 )); then
+        printf 'person_traffic:%s\n' "$person_rate"
+      fi
+      ;;
+  esac
+}
+
+workload_dir_for_unit() {
+  local step_dir="$1"
+  local unit="$2"
+  if [[ "$MODE" != "mixed" ]]; then
+    printf '%s\n' "$step_dir"
+    return
+  fi
+  case "$unit" in
+    group_traffic)
+      printf '%s/group\n' "$step_dir"
+      ;;
+    person_traffic)
+      printf '%s/person\n' "$step_dir"
+      ;;
+    *)
+      printf '%s\n' "$step_dir"
+      ;;
+  esac
+}
+
+run_mixed_step() {
+  local step_dir="$1"
+  local total_rate="$2"
+  local person_rate group_rate
+  local group_dir person_dir
+  local group_pid="" person_pid=""
+  local group_status=0 person_status=0
+
+  read -r person_rate group_rate < <(split_rates "$total_rate")
+  if (( group_rate > 0 )); then
+    group_dir="$step_dir/group"
+    run_step "$group_dir" &
+    group_pid="$!"
+  fi
+  if (( person_rate > 0 )); then
+    person_dir="$step_dir/person"
+    run_step "$person_dir" &
+    person_pid="$!"
+  fi
+  if [[ -n "$group_pid" ]]; then
+    wait "$group_pid" || group_status=$?
+  fi
+  if [[ -n "$person_pid" ]]; then
+    wait "$person_pid" || person_status=$?
+  fi
+  [[ "$group_status" -eq 0 && "$person_status" -eq 0 ]]
+}
+
+run_step_workloads() {
+  local step_dir="$1"
+  local total_rate="$2"
+  case "$MODE" in
+    mixed)
+      run_mixed_step "$step_dir" "$total_rate"
+      ;;
+    person|group)
+      run_step "$step_dir"
       ;;
   esac
 }
@@ -417,6 +516,45 @@ append_missing_unit_result() {
   printf '| `%s` | `%s` | `%s` | `%s` | `%s` | `0` | `0` | `0.000000` | `0.00ms` | `0.00ms` | `0.00ms` | `%s` |\n' "$MODE" "$total_qps" "$unit" "$offered_qps" "$status" "$step_dir" >> "$SUMMARY_ROWS"
 }
 
+error_rate_for_counts() {
+  local ok="$1"
+  local errors="$2"
+  local total=$((ok + errors))
+  if (( total == 0 )); then
+    printf '0\n'
+    return
+  fi
+  jq -n --argjson errors "$errors" --argjson total "$total" '$errors / $total'
+}
+
+append_total_result() {
+  local total_qps="$1"
+  local status="$2"
+  local ok="$3"
+  local errors="$4"
+  local step_dir="$5"
+  local error_rate
+  error_rate="$(error_rate_for_counts "$ok" "$errors")"
+  printf '%s,%s,total,%s,%s,%s,%s,%s,,,,%s\n' "$MODE" "$total_qps" "$total_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$OUT_DIR/summary.csv"
+  printf '| `%s` | `%s` | `total` | `%s` | `%s` | `%s` | `%s` | `%.6f` | `n/a` | `n/a` | `n/a` | `%s` |\n' \
+    "$MODE" "$total_qps" "$total_qps" "$status" "$ok" "$errors" "$error_rate" "$step_dir" >> "$SUMMARY_ROWS"
+}
+
+unit_ok_errors() {
+  local report="$1"
+  local unit="$2"
+  if [[ ! -f "$report" ]]; then
+    printf '0 0\n'
+    return
+  fi
+  jq -r \
+    --arg unit "$unit" \
+    '[
+      (.units[$unit].outputs.summary.value.sendack_ok // 0),
+      (.units[$unit].outputs.summary.value.sendack_errors // 0)
+    ] | @tsv' "$report"
+}
+
 append_unit_result() {
   local report="$1"
   local unit="$2"
@@ -445,26 +583,38 @@ append_step_results() {
   local step_dir="$1"
   local total_qps="$2"
   local status="$3"
-  local report="$step_dir/report.json"
-  local pair unit offered_qps
+  local pair unit offered_qps workload_dir report
+  local total_ok=0 total_errors=0 ok errors
   while IFS= read -r pair; do
     [[ -n "$pair" ]] || continue
     unit="${pair%%:*}"
     offered_qps="${pair##*:}"
-    append_unit_result "$report" "$unit" "$total_qps" "$offered_qps" "$status" "$step_dir"
+    workload_dir="$(workload_dir_for_unit "$step_dir" "$unit")"
+    report="$workload_dir/report.json"
+    append_unit_result "$report" "$unit" "$total_qps" "$offered_qps" "$status" "$workload_dir"
+    read -r ok errors < <(unit_ok_errors "$report" "$unit")
+    total_ok=$((total_ok + ok))
+    total_errors=$((total_errors + errors))
   done < <(offered_rates_for_mode "$total_qps")
+  if [[ "$MODE" == "mixed" ]]; then
+    append_total_result "$total_qps" "$status" "$total_ok" "$total_errors" "$step_dir"
+  fi
 }
 
 append_not_run_results() {
   local step_dir="$1"
   local total_qps="$2"
-  local pair unit offered_qps
+  local pair unit offered_qps workload_dir
   while IFS= read -r pair; do
     [[ -n "$pair" ]] || continue
     unit="${pair%%:*}"
     offered_qps="${pair##*:}"
-    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "not-run" "$step_dir"
+    workload_dir="$(workload_dir_for_unit "$step_dir" "$unit")"
+    append_missing_unit_result "$unit" "$total_qps" "$offered_qps" "not-run" "$workload_dir"
   done < <(offered_rates_for_mode "$total_qps")
+  if [[ "$MODE" == "mixed" ]]; then
+    append_total_result "$total_qps" "not-run" 0 0 "$step_dir"
+  fi
 }
 
 write_summary_markdown() {
@@ -628,7 +778,7 @@ for total_rate in "${RATE_VALUES[@]}"; do
   step_index=$((step_index + 1))
   step_dir="$(step_dir_for "$step_index" "$total_rate")"
   mkdir -p "$step_dir"
-  render_scenario "$step_index" "$total_rate" "$step_dir" > "$step_dir/scenario.yaml"
+  render_step_scenarios "$step_index" "$total_rate" "$step_dir"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     append_not_run_results "$step_dir" "$total_rate"
@@ -639,7 +789,7 @@ for total_rate in "${RATE_VALUES[@]}"; do
   if ! check_ready; then
     step_status="failed"
     printf 'target readiness check failed before step %s\n' "$total_rate" > "$step_dir/console.txt"
-  elif ! run_step "$step_dir"; then
+  elif ! run_step_workloads "$step_dir" "$total_rate"; then
     step_status="failed"
   fi
 

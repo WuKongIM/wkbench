@@ -26,6 +26,8 @@ Add a shell sweep runner in `wkbench/scripts`.
 
 The first implementation should generate temporary `wkbench/v2` scenarios for each rate step and invoke the existing `wkbench run` command. This keeps the search logic outside the benchmark engine and reuses the existing unit graph, metrics, assertions, and report writer.
 
+For `mixed` mode, the script must render separate person and group sub-scenarios for each step and run those two `wkbench run` processes concurrently. The `wkbench` kernel executes units in graph order, so putting two `traffic.send` units in a single scenario would measure sequential workloads rather than combined QPS.
+
 Recommended script:
 
 ```text
@@ -99,7 +101,7 @@ The configured rate is assigned to `group_traffic.rate`.
 
 ### Mixed Mode
 
-`mixed` mode generates both workloads.
+`mixed` mode generates both workloads as separate sub-scenarios that run at the same time.
 
 The user provides either a person/group ratio or separate rates. The first implementation should support a ratio because it is the most useful way to ask "total QPS".
 
@@ -110,7 +112,7 @@ person: 80%
 group: 20%
 ```
 
-For a total step rate of `1000/s`, the generated scenario uses:
+For a total step rate of `1000/s`, the generated sub-scenarios use:
 
 ```text
 person_rate = 800/s
@@ -189,8 +191,19 @@ steps/
     summary.md
     console.txt
   0002-200qps/
-    ...
+    group/
+      scenario.yaml
+      report.json
+      summary.md
+      console.txt
+    person/
+      scenario.yaml
+      report.json
+      summary.md
+      console.txt
 ```
+
+Person-only and group-only steps use the flat `scenario.yaml` layout. Mixed steps use the `group/` and `person/` subdirectories so both workloads can run concurrently and keep separate reports.
 
 `summary.md` should include:
 
@@ -203,6 +216,7 @@ steps/
 - per-step sendack error count
 - per-step sendack error rate
 - per-step sendack latency avg/min/max in milliseconds
+- mixed-mode aggregate total successes, errors, and error rate
 - links or paths to step reports
 
 `summary.csv` should include the same step-level machine-readable data.
@@ -213,14 +227,14 @@ The script should read each step's `report.json` with `jq` when available. If `j
 
 For `person` and `group` modes, the script reads one traffic unit.
 
-For `mixed` mode, the script reads both `person_traffic` and `group_traffic`, then reports:
+For `mixed` mode, the script reads `person_traffic` from the person sub-report and `group_traffic` from the group sub-report, then reports:
 
 - per-workload values
 - total sendack successes
 - total sendack errors
 - aggregate error rate
 
-Latency is not aggregated across workloads in the first implementation. Mixed mode should show separate person and group latency values to avoid misleading averages.
+Latency is not aggregated across workloads in the first implementation. Mixed mode should show separate person and group latency values to avoid misleading averages; the aggregate row should mark latency as not applicable.
 
 ## Failure Handling
 
@@ -248,7 +262,9 @@ Script tests:
 - It requires `jq` or emits a clear error.
 - It renders a person-mode scenario with only `person_traffic`.
 - It renders a group-mode scenario with only `group_traffic`.
-- It renders a mixed-mode scenario with both traffic units and the expected split rates.
+- It renders mixed-mode person and group sub-scenarios with the expected split rates.
+- It does not render `0/s` workload rates for low mixed rates.
+- It runs mixed-mode person and group sub-scenarios concurrently.
 - It computes `max_in_flight` from rate, expected latency, multiplier, and cap.
 - It writes deterministic step directories and summary paths.
 - It uses `GOWORK=off go run ./cmd/wkbench validate` before each run.
@@ -265,4 +281,3 @@ End-to-end smoke:
 2. Add README usage examples.
 3. Run script tests and full `GOWORK=off go test ./...`.
 4. Run one short real three-node sweep with small rates, for example `10,20`, to prove the path works without turning the developer machine into a sustained load box.
-

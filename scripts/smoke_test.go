@@ -234,19 +234,32 @@ func TestSendRateSweepDryRunRendersModeScenarios(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			outDir, _ := runSweepDryRun(t, "--mode", tt.mode)
-			data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "scenario.yaml"))
-			if err != nil {
-				t.Fatal(err)
+			var scenarioText string
+			if tt.mode == "mixed" {
+				groupData, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "group", "scenario.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				personData, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "person", "scenario.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				scenarioText = string(groupData) + "\n" + string(personData)
+			} else {
+				data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "scenario.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				scenarioText = string(data)
 			}
-			text := string(data)
 			for _, want := range tt.want {
-				if !strings.Contains(text, want) {
-					t.Fatalf("%s scenario missing %q:\n%s", tt.mode, want, text)
+				if !strings.Contains(scenarioText, want) {
+					t.Fatalf("%s scenario missing %q:\n%s", tt.mode, want, scenarioText)
 				}
 			}
 			for _, bad := range tt.mustNot {
-				if strings.Contains(text, bad) {
-					t.Fatalf("%s scenario should not contain %q:\n%s", tt.mode, bad, text)
+				if strings.Contains(scenarioText, bad) {
+					t.Fatalf("%s scenario should not contain %q:\n%s", tt.mode, bad, scenarioText)
 				}
 			}
 		})
@@ -288,6 +301,38 @@ func TestSendRateSweepDryRunHonorsGroupCount(t *testing.T) {
 	}
 }
 
+func TestSendRateSweepDryRunMixedHasAggregateAndNoZeroRates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir, _ := runSweepDryRun(t,
+		"--mode", "mixed",
+		"--rates", "1",
+	)
+	summary, err := os.ReadFile(filepath.Join(outDir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(summary), "| `mixed` | `1` | `total` | `1` | `not-run`") {
+		t.Fatalf("mixed summary should include aggregate total row:\n%s", summary)
+	}
+	for _, scenario := range []string{
+		filepath.Join(outDir, "steps", "0001-1qps", "person", "scenario.yaml"),
+		filepath.Join(outDir, "steps", "0001-1qps", "group", "scenario.yaml"),
+	} {
+		data, err := os.ReadFile(scenario)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "rate: 0/s") {
+			t.Fatalf("mixed low-rate scenario must not render 0/s:\n%s", data)
+		}
+	}
+}
+
 func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("bash sweep script is for unix-like developer environments")
@@ -307,6 +352,10 @@ func TestSendRateSweepScriptExtractsReportJSONFields(t *testing.T) {
 		`summary.csv`,
 		`highest_passing_qps`,
 		`first_failing_qps`,
+		`append_total_result`,
+		`run_mixed_step`,
+		`run_step "$group_dir" &`,
+		`run_step "$person_dir" &`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("sweep script missing result extraction fragment %q", want)

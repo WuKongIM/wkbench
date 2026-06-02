@@ -4,7 +4,7 @@
 
 **Goal:** Add a repeatable `wkbench` script that finds the highest passing `SEND -> SENDACK` QPS for person, group, or mixed traffic against the local WuKongIM v2 three-node target.
 
-**Architecture:** Implement the sweep as a shell script in `scripts/` that generates one temporary `wkbench/v2` scenario per QPS step, runs `wkbench validate` and `wkbench run`, extracts results from each step's `report.json` with `jq`, and writes aggregate `summary.md` and `summary.csv`. Add fast Go tests around script syntax, dry-run scenario rendering, max-in-flight calculation, `jq` guard behavior, and command ordering.
+**Architecture:** Implement the sweep as a shell script in `scripts/` that generates temporary `wkbench/v2` scenarios for each QPS step, runs `wkbench validate` and `wkbench run`, extracts results from each step's `report.json` with `jq`, and writes aggregate `summary.md` and `summary.csv`. Mixed mode renders separate group/person sub-scenarios and runs them concurrently because the `wkbench` kernel executes units in graph order. Add fast Go tests around script syntax, dry-run scenario rendering, max-in-flight calculation, `jq` guard behavior, and command ordering.
 
 **Tech Stack:** Bash, Go `testing`, `wkbench` CLI, `jq`, existing `traffic.send/v1`, existing three-node startup script.
 
@@ -16,7 +16,7 @@
   - Parses sweep options.
   - Computes per-step person/group rates.
   - Computes per-workload `max_in_flight`.
-  - Renders step `scenario.yaml` files.
+  - Renders step `scenario.yaml` files. Mixed mode renders `group/scenario.yaml` and `person/scenario.yaml` per step.
   - Optionally starts/stops the local three-node target.
   - Runs `wkbench validate` before `wkbench run` for each step.
   - Extracts step results from `report.json`.
@@ -872,8 +872,10 @@ Run:
 Expected:
 
 - exits `0`
-- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0001-10qps/scenario.yaml`
-- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0002-20qps/scenario.yaml`
+- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0001-10qps/group/scenario.yaml`
+- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0001-10qps/person/scenario.yaml`
+- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0002-20qps/group/scenario.yaml`
+- writes `/tmp/wkbench-send-rate-sweep-dry/steps/0002-20qps/person/scenario.yaml`
 - writes `/tmp/wkbench-send-rate-sweep-dry/summary.csv`
 
 - [ ] **Step 3: Run one short real local three-node sweep**
