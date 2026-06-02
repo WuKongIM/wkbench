@@ -184,10 +184,116 @@ func TestSendRateSweepScriptRequiresJQForRealRun(t *testing.T) {
 	}
 }
 
+func TestSendRateSweepDryRunRendersModeScenarios(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	cases := []struct {
+		name    string
+		mode    string
+		want    []string
+		mustNot []string
+	}{
+		{
+			name: "person",
+			mode: "person",
+			want: []string{
+				"use: identity.person_pairs",
+				"use: traffic.send",
+				"rate: 100/s",
+				"max_in_flight: 40",
+				"person_traffic:",
+			},
+			mustNot: []string{"group_traffic:", "use: wukongim.prepare_group_channels"},
+		},
+		{
+			name: "group",
+			mode: "group",
+			want: []string{
+				"use: wukongim.prepare_group_channels",
+				"use: traffic.send",
+				"rate: 100/s",
+				"max_in_flight: 40",
+				"group_traffic:",
+			},
+			mustNot: []string{"person_traffic:", "use: identity.person_pairs"},
+		},
+		{
+			name: "mixed",
+			mode: "mixed",
+			want: []string{
+				"person_traffic:",
+				"group_traffic:",
+				"rate: 80/s",
+				"rate: 20/s",
+				"max_in_flight: 32",
+				"max_in_flight: 8",
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			outDir, _ := runSweepDryRun(t, "--mode", tt.mode)
+			data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100qps", "scenario.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(data)
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("%s scenario missing %q:\n%s", tt.mode, want, text)
+				}
+			}
+			for _, bad := range tt.mustNot {
+				if strings.Contains(text, bad) {
+					t.Fatalf("%s scenario should not contain %q:\n%s", tt.mode, bad, text)
+				}
+			}
+		})
+	}
+}
+
+func TestSendRateSweepDryRunCapsMaxInFlight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash sweep script is for unix-like developer environments")
+	}
+	outDir, _ := runSweepDryRun(t,
+		"--mode", "person",
+		"--rates", "100000",
+		"--max-in-flight-cap", "1234",
+	)
+	data, err := os.ReadFile(filepath.Join(outDir, "steps", "0001-100000qps", "scenario.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "max_in_flight: 1234") {
+		t.Fatalf("scenario should cap max_in_flight at 1234:\n%s", data)
+	}
+}
+
 func sweepScriptPath(t *testing.T) string {
 	t.Helper()
 	root := filepath.Dir(filepath.Dir(scriptPath(t)))
 	return filepath.Join(root, "scripts", "bench-wukongim-three-node-send-rate-sweep.sh")
+}
+
+func runSweepDryRun(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+	outDir := t.TempDir()
+	allArgs := append([]string{
+		"--out-dir", outDir,
+		"--dry-run",
+		"--no-start-target",
+		"--rates", "100",
+		"--duration", "1s",
+		"--expected-latency-ms", "200",
+		"--inflight-multiplier", "2",
+	}, args...)
+	out, err := runBash(t, sweepScriptPath(t), allArgs...)
+	if err != nil {
+		t.Fatalf("dry-run failed: %v\n%s", err, out)
+	}
+	return outDir, out
 }
 
 func runBash(t *testing.T, script string, args ...string) (string, error) {
