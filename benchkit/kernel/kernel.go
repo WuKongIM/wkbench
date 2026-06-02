@@ -275,9 +275,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 				if failed.err == nil {
 					continue
 				}
-				if _, ok := fatalBackgrounds[failed.unit]; !ok {
-					fatalBackgrounds[failed.unit] = failed.err
-				}
+				recordBackgroundError(fatalBackgrounds, failed)
 				if !found {
 					first = failed
 					found = true
@@ -286,9 +284,6 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 				return first, found
 			}
 		}
-	}
-	backgroundFailureError := func(failed backgroundError) error {
-		return fmt.Errorf("unit %q background: %w", failed.unit, failed.err)
 	}
 	outputs := newOutputStore()
 	cleanup := func() {
@@ -299,7 +294,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 		if failed, ok := checkBackgroundErrors(); ok {
 			result.Status = StatusWorkerFailed
 			primaryErr := backgroundFailureError(failed)
-			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 			cleanup()
 			return result, primaryErr
 		}
@@ -309,14 +304,14 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			if failed, ok := checkBackgroundErrors(); ok {
 				result.Status = StatusWorkerFailed
 				primaryErr := backgroundFailureError(failed)
-				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 				cleanup()
 				return result, primaryErr
 			}
 			result.Status = StatusConfigFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusConfigFailed, Error: err.Error()}
 			primaryErr := fmt.Errorf("unit %q validate: %w", name, err)
-			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 			cleanup()
 			return result, primaryErr
 		}
@@ -324,14 +319,14 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 			if failed, ok := checkBackgroundErrors(); ok {
 				result.Status = StatusWorkerFailed
 				primaryErr := backgroundFailureError(failed)
-				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 				cleanup()
 				return result, primaryErr
 			}
 			result.Status = StatusPlanFailed
 			result.Units[name] = UnitResult{Kind: node.def.Kind, Status: StatusPlanFailed, Error: err.Error()}
 			primaryErr := fmt.Errorf("unit %q plan: %w", name, err)
-			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 			cleanup()
 			return result, primaryErr
 		}
@@ -362,27 +357,28 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 					ElapsedMS: elapsedMS,
 				}
 				primaryErr := fmt.Errorf("unit %q start: %w", name, err)
-				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+				primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 				cleanup()
 				return result, primaryErr
 			}
-			active = append(active, activeBackground{name: name, node: node, env: env, task: task, startedAt: start})
-			go func(unitName string, task contract.BackgroundTask) {
-				errCh := task.Done()
-				if errCh == nil {
-					return
-				}
-				if err, ok := <-errCh; ok && err != nil {
-					backgroundErrors <- backgroundError{unit: unitName, err: err}
-					cancel()
-				}
-			}(name, task)
+			bg := activeBackground{name: name, node: node, env: env, task: task, startedAt: start}
+			if done := task.Done(); done != nil {
+				bg.monitorDone = make(chan struct{})
+				go func(unitName string, errCh <-chan error, doneCh chan<- struct{}) {
+					defer close(doneCh)
+					if err, ok := <-errCh; ok && err != nil {
+						backgroundErrors <- backgroundError{unit: unitName, err: err}
+						cancel()
+					}
+				}(name, done, bg.monitorDone)
+			}
+			active = append(active, bg)
 			continue
 		}
 		if failed, ok := checkBackgroundErrors(); ok {
 			result.Status = StatusWorkerFailed
 			primaryErr := backgroundFailureError(failed)
-			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 			cleanup()
 			return result, primaryErr
 		}
@@ -414,7 +410,7 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 				primaryErr = errors.Join(primaryErr, backgroundFailureError(failed))
 			}
 			cancel()
-			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+			primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 			cleanup()
 			return result, primaryErr
 		}
@@ -431,11 +427,11 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 	if failed, ok := checkBackgroundErrors(); ok {
 		result.Status = StatusWorkerFailed
 		primaryErr := backgroundFailureError(failed)
-		primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds)
+		primaryErr = stopBackgroundsAfterEarlyFailure(runCtx, active, outputs, result.Units, primaryErr, &result.Status, fatalBackgrounds, checkBackgroundErrors)
 		cleanup()
 		return result, primaryErr
 	}
-	if err := stopBackgrounds(runCtx, active, outputs, result.Units, fatalBackgrounds); err != nil {
+	if err := stopBackgrounds(runCtx, active, outputs, result.Units, fatalBackgrounds, checkBackgroundErrors); err != nil {
 		result.Status = StatusWorkerFailed
 		cleanup()
 		return result, err
@@ -444,8 +440,8 @@ func (e *Engine) Run(ctx context.Context, scenario dsl.Scenario) (Result, error)
 	return result, nil
 }
 
-func stopBackgroundsAfterEarlyFailure(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult, primaryErr error, status *Status, fatalBackgrounds map[string]error) error {
-	stopErr := stopBackgrounds(ctx, active, outputs, results, fatalBackgrounds)
+func stopBackgroundsAfterEarlyFailure(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult, primaryErr error, status *Status, fatalBackgrounds map[string]error, drainBackgroundErrors func() (backgroundError, bool)) error {
+	stopErr := stopBackgrounds(ctx, active, outputs, results, fatalBackgrounds, drainBackgroundErrors)
 	if stopErr != nil {
 		*status = StatusWorkerFailed
 		return errors.Join(primaryErr, stopErr)
@@ -453,11 +449,32 @@ func stopBackgroundsAfterEarlyFailure(ctx context.Context, active []activeBackgr
 	return primaryErr
 }
 
-func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult, fatalBackgrounds map[string]error) error {
+func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *outputStore, results map[string]UnitResult, fatalBackgrounds map[string]error, drainBackgroundErrors func() (backgroundError, bool)) error {
 	var firstErr error
+	rememberBackgroundErr := func(failed backgroundError) {
+		if failed.err == nil {
+			return
+		}
+		recordBackgroundError(fatalBackgrounds, failed)
+		if firstErr == nil {
+			firstErr = backgroundFailureError(failed)
+		}
+	}
+	drain := func() {
+		if drainBackgroundErrors == nil {
+			return
+		}
+		if failed, ok := drainBackgroundErrors(); ok {
+			rememberBackgroundErr(failed)
+		}
+	}
+	drain()
 	for i := len(active) - 1; i >= 0; i-- {
 		bg := active[i]
+		drain()
 		err := bg.task.Stop(ctx)
+		waitBackgroundMonitor(bg)
+		drain()
 		end := time.Now()
 		startedAt, endedAt, elapsedMS := timelineFields(bg.startedAt, end)
 		status := StatusCompleted
@@ -489,7 +506,27 @@ func stopBackgrounds(ctx context.Context, active []activeBackground, outputs *ou
 			ElapsedMS: elapsedMS,
 		}
 	}
+	drain()
 	return firstErr
+}
+
+func recordBackgroundError(fatalBackgrounds map[string]error, failed backgroundError) {
+	if failed.err == nil {
+		return
+	}
+	if _, ok := fatalBackgrounds[failed.unit]; !ok {
+		fatalBackgrounds[failed.unit] = failed.err
+	}
+}
+
+func backgroundFailureError(failed backgroundError) error {
+	return fmt.Errorf("unit %q background: %w", failed.unit, failed.err)
+}
+
+func waitBackgroundMonitor(bg activeBackground) {
+	if bg.monitorDone != nil {
+		<-bg.monitorDone
+	}
 }
 
 func graphWiring(graph *graph) []ExplainBinding {
@@ -547,11 +584,12 @@ type graphNode struct {
 }
 
 type activeBackground struct {
-	name      string
-	node      *graphNode
-	env       *runEnv
-	task      contract.BackgroundTask
-	startedAt time.Time
+	name        string
+	node        *graphNode
+	env         *runEnv
+	task        contract.BackgroundTask
+	startedAt   time.Time
+	monitorDone chan struct{}
 }
 
 type backgroundError struct {
