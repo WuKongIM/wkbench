@@ -451,6 +451,7 @@ type testArtifactWriter struct {
 	contentType string
 	size        int64
 	closed      bool
+	closeErr    error
 }
 
 func (w *testArtifactWriter) Write(p []byte) (int, error) {
@@ -461,12 +462,16 @@ func (w *testArtifactWriter) Write(p []byte) (int, error) {
 
 func (w *testArtifactWriter) Close() error {
 	if w.closed {
-		return nil
+		return w.closeErr
 	}
+	closeErr := w.file.Close()
+	w.recordArtifact()
 	w.closed = true
-	if err := w.file.Close(); err != nil {
-		return err
-	}
+	w.closeErr = closeErr
+	return closeErr
+}
+
+func (w *testArtifactWriter) recordArtifact() {
 	w.env.mu.Lock()
 	defer w.env.mu.Unlock()
 	if w.env.artifacts == nil {
@@ -477,7 +482,6 @@ func (w *testArtifactWriter) Close() error {
 		ContentType: w.contentType,
 		SizeBytes:   w.size,
 	}
-	return nil
 }
 
 func cloneMap(in map[string]any) map[string]any {

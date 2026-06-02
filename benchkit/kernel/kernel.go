@@ -987,6 +987,7 @@ type runArtifactWriter struct {
 	contentType string
 	size        int64
 	closed      bool
+	closeErr    error
 }
 
 func (w *runArtifactWriter) Write(p []byte) (int, error) {
@@ -997,12 +998,16 @@ func (w *runArtifactWriter) Write(p []byte) (int, error) {
 
 func (w *runArtifactWriter) Close() error {
 	if w.closed {
-		return nil
+		return w.closeErr
 	}
+	closeErr := w.file.Close()
+	w.recordArtifact()
 	w.closed = true
-	if err := w.file.Close(); err != nil {
-		return err
-	}
+	w.closeErr = closeErr
+	return closeErr
+}
+
+func (w *runArtifactWriter) recordArtifact() {
 	w.env.mu.Lock()
 	defer w.env.mu.Unlock()
 	w.env.artifacts[w.name] = ArtifactResult{
@@ -1010,7 +1015,6 @@ func (w *runArtifactWriter) Close() error {
 		ContentType: w.contentType,
 		SizeBytes:   w.size,
 	}
-	return nil
 }
 
 type metricStore struct {

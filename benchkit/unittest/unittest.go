@@ -113,9 +113,14 @@ func assertArtifacts(t TB, kind string, artifacts []contract.ArtifactDef) {
 	t.Helper()
 	seen := make(map[string]struct{}, len(artifacts))
 	for _, artifact := range artifacts {
-		name := strings.TrimSpace(artifact.Name)
+		rawName := artifact.Name
+		name := strings.TrimSpace(rawName)
 		if name == "" {
 			t.Fatalf("unit %q artifact name is required", kind)
+			return
+		}
+		if name == "." || strings.Contains(rawName, "..") || strings.ContainsAny(rawName, `/\`) {
+			t.Fatalf("unit %q artifact %q must be a simple relative file name", kind, rawName)
 			return
 		}
 		if _, ok := seen[name]; ok {

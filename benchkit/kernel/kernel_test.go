@@ -6,11 +6,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	_ "unsafe"
+	"unsafe"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
@@ -381,7 +382,7 @@ func TestEngineRejectsUnsafeArtifactUnitName(t *testing.T) {
 }
 
 func TestEngineRejectsUnsafeArtifactName(t *testing.T) {
-	for _, artifactName := range []string{".", "   "} {
+	for _, artifactName := range []string{".", "   ", "..", "../outside", "foo/bar", "foo\\bar"} {
 		t.Run(artifactName, func(t *testing.T) {
 			reg := registry.New()
 			reg.MustRegister(artifactNameUnit{kind: "test.unsafe_artifact_name/v1", artifactName: artifactName})
@@ -408,6 +409,48 @@ func TestEngineRejectsUnsafeArtifactName(t *testing.T) {
 				t.Fatalf("unexpected failed unit: %#v", unit)
 			}
 		})
+	}
+}
+
+func TestEngineRecordsArtifactMetadataWhenCloseFails(t *testing.T) {
+	reportDir := t.TempDir()
+	var secondCloseErr error
+	reg := registry.New()
+	reg.MustRegister(closeFailArtifactUnit{secondCloseErr: &secondCloseErr})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "artifact-close-fails", ReportDir: reportDir},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.close_fail_artifact/v1"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected artifact close error")
+	}
+	if secondCloseErr == nil {
+		t.Fatal("expected repeated Close to return the first close error")
+	}
+	unit := result.Units["metrics"]
+	if unit.Status != kernel.StatusWorkerFailed {
+		t.Fatalf("unexpected status %s", unit.Status)
+	}
+	artifact := unit.Artifacts["metrics.jsonl"]
+	if artifact.Path != "artifacts/metrics/metrics.jsonl" {
+		t.Fatalf("artifact path = %q, want artifacts/metrics/metrics.jsonl", artifact.Path)
+	}
+	if artifact.ContentType != "application/jsonl" {
+		t.Fatalf("artifact content type = %q, want application/jsonl", artifact.ContentType)
+	}
+	if artifact.SizeBytes != int64(len(closeFailArtifactPayload)) {
+		t.Fatalf("artifact size = %d, want %d", artifact.SizeBytes, len(closeFailArtifactPayload))
+	}
+	data, readErr := os.ReadFile(filepath.Join(reportDir, filepath.FromSlash(artifact.Path)))
+	if readErr != nil {
+		t.Fatalf("artifact file missing: %v", readErr)
+	}
+	if string(data) != closeFailArtifactPayload {
+		t.Fatalf("artifact data = %q", data)
 	}
 }
 
@@ -1556,6 +1599,60 @@ func (t backgroundArtifactTask) Stop(context.Context) error {
 		return err
 	}
 	return w.Close()
+}
+
+const closeFailArtifactPayload = "{\"close_failed\":true}\n"
+
+type closeFailArtifactUnit struct {
+	secondCloseErr *error
+}
+
+func (closeFailArtifactUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.close_fail_artifact/v1",
+		Artifacts: []contract.ArtifactDef{
+			{Name: "metrics.jsonl", ContentType: "application/jsonl"},
+		},
+	}
+}
+
+func (closeFailArtifactUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (closeFailArtifactUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (u closeFailArtifactUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	w, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(closeFailArtifactPayload)); err != nil {
+		return err
+	}
+	if err := forceCloseArtifactFile(w); err != nil {
+		return err
+	}
+	firstCloseErr := w.Close()
+	if u.secondCloseErr != nil {
+		*u.secondCloseErr = w.Close()
+	}
+	return firstCloseErr
+}
+
+func forceCloseArtifactFile(writer any) error {
+	value := reflect.ValueOf(writer)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		return fmt.Errorf("writer has unexpected shape %T", writer)
+	}
+	fileField := value.Elem().FieldByName("file")
+	if !fileField.IsValid() || fileField.Kind() != reflect.Ptr {
+		return fmt.Errorf("writer %T has no file pointer field", writer)
+	}
+	file := (*os.File)(unsafe.Pointer(fileField.Pointer()))
+	return file.Close()
 }
 
 type undeclaredArtifactUnit struct{}

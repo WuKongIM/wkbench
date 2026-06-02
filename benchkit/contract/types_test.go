@@ -3,9 +3,11 @@ package contract_test
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
@@ -71,7 +73,7 @@ func TestTestRunEnvRejectsUndeclaredArtifact(t *testing.T) {
 }
 
 func TestTestRunEnvRejectsUnsafeDeclaredArtifactName(t *testing.T) {
-	for _, name := range []string{".", "   "} {
+	for _, name := range []string{".", "   ", "..", "../outside", "foo/bar", "foo\\bar"} {
 		t.Run(name, func(t *testing.T) {
 			env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
 			env.DeclareArtifacts([]contract.ArtifactDef{{Name: name}})
@@ -87,9 +89,64 @@ func TestTestRunEnvRejectsUnsafeDeclaredArtifactName(t *testing.T) {
 	}
 }
 
+func TestTestRunEnvArtifactCloseRecordsMetadataWhenFileCloseFails(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{
+		{Name: "metrics.jsonl", ContentType: "application/jsonl"},
+	})
+
+	w, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	payload := []byte("{\"ok\":true}\n")
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	forceCloseArtifactFile(t, w)
+
+	err = w.Close()
+	if err == nil {
+		t.Fatal("expected close error")
+	}
+	secondErr := w.Close()
+	if secondErr == nil {
+		t.Fatal("expected repeated Close to return the first close error")
+	}
+	if secondErr.Error() != err.Error() {
+		t.Fatalf("second close error = %q, want %q", secondErr.Error(), err.Error())
+	}
+	info := env.Artifacts()["metrics.jsonl"]
+	if info.Path == "" {
+		t.Fatal("artifact path was not recorded")
+	}
+	if info.ContentType != "application/jsonl" {
+		t.Fatalf("ContentType = %q, want application/jsonl", info.ContentType)
+	}
+	if info.SizeBytes != int64(len(payload)) {
+		t.Fatalf("SizeBytes = %d, want %d", info.SizeBytes, len(payload))
+	}
+}
+
 func TestBackgroundInterfacesCompile(t *testing.T) {
 	var _ contract.BackgroundUnit = backgroundCompileUnit{}
 	var _ contract.BackgroundTask = backgroundCompileTask{}
+}
+
+func forceCloseArtifactFile(t *testing.T, writer any) {
+	t.Helper()
+	value := reflect.ValueOf(writer)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		t.Fatalf("writer has unexpected shape %T", writer)
+	}
+	fileField := value.Elem().FieldByName("file")
+	if !fileField.IsValid() || fileField.Kind() != reflect.Ptr {
+		t.Fatalf("writer %T has no file pointer field", writer)
+	}
+	file := (*os.File)(unsafe.Pointer(fileField.Pointer()))
+	if err := file.Close(); err != nil {
+		t.Fatalf("force close artifact file: %v", err)
+	}
 }
 
 type backgroundCompileUnit struct{}

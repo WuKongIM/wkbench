@@ -22,6 +22,18 @@ func TestAssertUnitContractRejectsUnversionedKind(t *testing.T) {
 	}
 }
 
+func TestAssertUnitContractRejectsUnsafeArtifactNames(t *testing.T) {
+	for _, artifactName := range []string{".", "..", "foo/bar", "foo\\bar", "   "} {
+		t.Run(artifactName, func(t *testing.T) {
+			tb := &spyTB{}
+			unittest.AssertUnitContract(tb, artifactNameUnit{name: artifactName})
+			if !strings.Contains(tb.message, "artifact") {
+				t.Fatalf("expected artifact failure, got %q", tb.message)
+			}
+		})
+	}
+}
+
 func TestAssertDeclaredOutputsRejectsMissingOutput(t *testing.T) {
 	tb := &spyTB{}
 	env := contract.NewTestRunEnv("run", "unit", nil, nil)
@@ -92,6 +104,17 @@ type outputUnit struct{ goodUnit }
 func (outputUnit) Definition() contract.Definition {
 	def := goodUnit{}.Definition()
 	def.Outputs = []contract.PortDef{{Name: "value", Type: "port.test.value/v1"}}
+	return def
+}
+
+type artifactNameUnit struct {
+	goodUnit
+	name string
+}
+
+func (u artifactNameUnit) Definition() contract.Definition {
+	def := goodUnit{}.Definition()
+	def.Artifacts = []contract.ArtifactDef{{Name: u.name}}
 	return def
 }
 
