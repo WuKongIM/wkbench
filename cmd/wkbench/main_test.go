@@ -128,6 +128,7 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 		"identity.person_pairs/v1",
 		"traffic.send/v1",
 		"wukongim.target/v1",
+		"wukongim.metrics_collector/v1",
 		"wukongim.prepare_tokens/v1",
 		"wukongim.prepare_group_channels/v1",
 		"wkproto.session_pool/v1",
@@ -135,6 +136,41 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected list-units to include %s, got:\n%s", want, out)
 		}
+	}
+}
+
+func TestValidateCommandAcceptsMetricsCollectorScenario(t *testing.T) {
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: metrics-collector
+  duration: 1ms
+units:
+  target:
+    use: wukongim.target
+    spec:
+      api_addrs: ["http://127.0.0.1:5011"]
+      gateway_tcp_addrs: ["127.0.0.1:5111"]
+      bench_api_token: ""
+      operation_timeout: 5s
+      skip_readiness: true
+      skip_capabilities: true
+  metrics:
+    use: wukongim.metrics_collector
+    after: [target]
+    inputs:
+      target: target.target
+    spec:
+      interval: 1s
+      timeout: 800ms
+      path: /metrics
+      include: ["wk_.*", "wukongim_.*"]
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"validate", "-scenario", scenarioPath}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
 	}
 }
 

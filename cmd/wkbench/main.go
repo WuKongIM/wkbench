@@ -22,6 +22,7 @@ import (
 	groupsend "github.com/WuKongIM/wkbench/units/traffic/group_send"
 	sendtraffic "github.com/WuKongIM/wkbench/units/traffic/send"
 	sessionpool "github.com/WuKongIM/wkbench/units/wkproto/session_pool"
+	metricscollector "github.com/WuKongIM/wkbench/units/wukongim/metrics_collector"
 	preparegroups "github.com/WuKongIM/wkbench/units/wukongim/prepare_group_channels"
 	preparetokens "github.com/WuKongIM/wkbench/units/wukongim/prepare_tokens"
 	wukongtarget "github.com/WuKongIM/wkbench/units/wukongim/target"
@@ -71,6 +72,7 @@ func defaultRegistry() *registry.Registry {
 	identitypool.Register(reg)
 	personpairs.Register(reg)
 	wukongtarget.Register(reg)
+	metricscollector.Register(reg)
 	preparetokens.Register(reg)
 	preparegroups.Register(reg)
 	sessionpool.Register(reg)
