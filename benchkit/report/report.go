@@ -79,7 +79,7 @@ func formatOutput(name string, output kernel.OutputResult) string {
 func formatOutputValue(value any) string {
 	switch v := value.(type) {
 	case trafficport.Summary:
-		return fmt.Sprintf("sendack_ok: `%d`, sendack_errors: `%d`, sendack_error_rate: `%.4f`, last_message_id: `%d`", v.SendackOK, v.SendackErrors, v.SendackErrorRate(), v.LastMessageID)
+		return fmt.Sprintf("sendack_ok: `%d`, sendack_errors: `%d`, sendack_error_rate: `%.4f`, elapsed_ms: `%d`, actual_qps: `%.2f`, last_message_id: `%d`", v.SendackOK, v.SendackErrors, v.SendackErrorRate(), v.ElapsedMS, v.ActualQPS(), v.LastMessageID)
 	default:
 		data, err := json.Marshal(value)
 		if err != nil {

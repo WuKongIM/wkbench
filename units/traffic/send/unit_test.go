@@ -56,6 +56,12 @@ func TestSendUsesTargetsAndEmitsSummaryAndLatency(t *testing.T) {
 	if summary.SendackOK != 2 || summary.SendackErrors != 0 || summary.LastMessageID != 2 {
 		t.Fatalf("unexpected summary: %#v", summary)
 	}
+	if summary.ElapsedMS <= 0 {
+		t.Fatalf("summary should record elapsed runtime in ms: %#v", summary)
+	}
+	if summary.ActualQPS() <= 0 {
+		t.Fatalf("summary should expose actual qps: %#v", summary)
+	}
 	if got := env.CounterValue("send_attempt_total"); got != 2 {
 		t.Fatalf("expected two attempts, got %v", got)
 	}
@@ -65,14 +71,14 @@ func TestSendUsesTargetsAndEmitsSummaryAndLatency(t *testing.T) {
 	if got := env.CounterValue("sendack_error_total"); got != 0 {
 		t.Fatalf("expected no errors, got %v", got)
 	}
-	if samples := env.DurationValues("sendack_latency"); len(samples) != 2 {
-		t.Fatalf("expected two latency samples, got %d", len(samples))
+	if samples := env.DurationValues("sendack_latency"); len(samples) != 2 || samples[0] != 3*time.Millisecond || samples[1] != 4*time.Millisecond {
+		t.Fatalf("unexpected sendack latency samples: %#v", samples)
 	}
-	if samples := env.DurationValues("sendack_queue_latency"); len(samples) != 2 || samples[0] != time.Millisecond || samples[1] != 2*time.Millisecond {
-		t.Fatalf("unexpected queue latency samples: %#v", samples)
+	if samples := env.DurationValues("sendack_queue_latency"); len(samples) != 0 {
+		t.Fatalf("queue latency should not be recorded: %#v", samples)
 	}
-	if samples := env.DurationValues("sendack_wire_latency"); len(samples) != 2 || samples[0] != 3*time.Millisecond || samples[1] != 4*time.Millisecond {
-		t.Fatalf("unexpected wire latency samples: %#v", samples)
+	if samples := env.DurationValues("sendack_wire_latency"); len(samples) != 0 {
+		t.Fatalf("separate wire latency should not be recorded: %#v", samples)
 	}
 	requests := client.Requests()
 	if len(requests) != 2 {
@@ -346,10 +352,9 @@ func (c *recordingClient) SendAndWaitAck(ctx context.Context, req wkprotoport.Se
 		return wkprotoport.SendAck{}, errors.New("bad request")
 	}
 	return wkprotoport.SendAck{
-		MessageID:    int64(call),
-		MessageSeq:   uint64(call),
-		QueueLatency: time.Duration(call) * time.Millisecond,
-		WireLatency:  time.Duration(call+2) * time.Millisecond,
+		MessageID:   int64(call),
+		MessageSeq:  uint64(call),
+		WireLatency: time.Duration(call+2) * time.Millisecond,
 	}, nil
 }
 

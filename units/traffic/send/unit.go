@@ -78,8 +78,6 @@ func (Unit) Definition() contract.Definition {
 			{Name: "sendack_success_total", Type: "counter"},
 			{Name: "sendack_error_total", Type: "counter"},
 			{Name: "sendack_latency", Type: "duration"},
-			{Name: "sendack_queue_latency", Type: "duration"},
-			{Name: "sendack_wire_latency", Type: "duration"},
 		},
 	}
 }
@@ -214,6 +212,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 		}
 	}
 
+	summary.ElapsedMS = elapsedMilliseconds(start)
 	return env.SetOutput("summary", summary)
 }
 
@@ -249,11 +248,24 @@ func applyResult(env contract.RunEnv, summary *trafficport.Summary, result sendR
 		return
 	}
 	env.EmitCounter("sendack_success_total", 1, nil)
-	env.ObserveDuration("sendack_latency", result.latency, nil)
-	env.ObserveDuration("sendack_queue_latency", result.ack.QueueLatency, nil)
-	env.ObserveDuration("sendack_wire_latency", result.ack.WireLatency, nil)
+	env.ObserveDuration("sendack_latency", sendackLatency(result), nil)
 	summary.SendackOK++
 	summary.LastMessageID = result.ack.MessageID
+}
+
+func sendackLatency(result sendResult) time.Duration {
+	if result.ack.WireLatency > 0 {
+		return result.ack.WireLatency
+	}
+	return result.latency
+}
+
+func elapsedMilliseconds(start time.Time) int64 {
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed < 1 {
+		return 1
+	}
+	return elapsed
 }
 
 func totalMessages(rate contract.Rate, duration time.Duration) int64 {

@@ -43,7 +43,7 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 				Outputs: map[string]kernel.OutputResult{
 					"summary": {
 						Type:  trafficport.SummaryV1,
-						Value: trafficport.Summary{SendackOK: 9, SendackErrors: 1, LastMessageID: 42},
+						Value: trafficport.Summary{SendackOK: 9, SendackErrors: 1, ElapsedMS: 2000, LastMessageID: 42},
 					},
 				},
 			},
@@ -57,7 +57,7 @@ func TestWriteDirIncludesTrafficSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"sendack_ok: `9`", "sendack_errors: `1`", "sendack_error_rate: `0.1000`"} {
+	for _, want := range []string{"sendack_ok: `9`", "sendack_errors: `1`", "sendack_error_rate: `0.1000`", "elapsed_ms: `2000`", "actual_qps: `4.50`"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("summary.md missing %q:\n%s", want, text)
 		}

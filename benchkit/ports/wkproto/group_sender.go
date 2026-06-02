@@ -43,8 +43,6 @@ type SendAck struct {
 	MessageID int64
 	// MessageSeq is the acknowledged channel sequence.
 	MessageSeq uint64
-	// QueueLatency is time spent waiting for the local client send slot.
-	QueueLatency time.Duration
 	// WireLatency is time from writing the send packet until matching sendack.
 	WireLatency time.Duration
 }

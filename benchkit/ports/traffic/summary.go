@@ -12,6 +12,8 @@ type Summary struct {
 	SendackOK uint64 `json:"sendack_ok"`
 	// SendackErrors counts failed sendack waits.
 	SendackErrors uint64 `json:"sendack_errors"`
+	// ElapsedMS records the measured traffic-unit runtime in milliseconds.
+	ElapsedMS int64 `json:"elapsed_ms,omitempty"`
 	// LastMessageID records the last acknowledged message id when present.
 	LastMessageID int64 `json:"last_message_id,omitempty"`
 }
@@ -23,6 +25,14 @@ func (s Summary) SendackErrorRate() float64 {
 		return 0
 	}
 	return float64(s.SendackErrors) / float64(total)
+}
+
+// ActualQPS returns successful sendacks divided by the measured runtime.
+func (s Summary) ActualQPS() float64 {
+	if s.ElapsedMS <= 0 {
+		return 0
+	}
+	return float64(s.SendackOK) / (float64(s.ElapsedMS) / 1000)
 }
 
 // ReportOutput implements contract.ReportableOutput.

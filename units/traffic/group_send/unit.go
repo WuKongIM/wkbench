@@ -136,6 +136,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 		ackTimeout = defaultAckTimeout
 	}
 	var summary trafficport.Summary
+	start := time.Now()
 	for idx := int64(0); idx < messageCount; idx++ {
 		env.EmitCounter("send_attempt_total", 1, nil)
 		ack, err := sendOne(ctx, env, spec, ackTimeout, channels, sender, idx)
@@ -145,11 +146,20 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 			continue
 		}
 		env.EmitCounter("sendack_success_total", 1, nil)
-		env.ObserveDuration("sendack_latency", 0, nil)
+		env.ObserveDuration("sendack_latency", ack.WireLatency, nil)
 		summary.SendackOK++
 		summary.LastMessageID = ack.MessageID
 	}
+	summary.ElapsedMS = elapsedMilliseconds(start)
 	return env.SetOutput("summary", summary)
+}
+
+func elapsedMilliseconds(start time.Time) int64 {
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed < 1 {
+		return 1
+	}
+	return elapsed
 }
 
 func totalMessages(rate contract.Rate, duration time.Duration) int64 {
