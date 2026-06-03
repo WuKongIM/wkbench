@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/protocol"
@@ -174,6 +176,120 @@ func TestServerRunAppliesWorkerCount(t *testing.T) {
 	}
 }
 
+func TestServerRunSeparatesRawAndReportPayload(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{secretReportUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "secret",
+			Kind:              "demo.secret_report/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       1,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+
+	outputFrame := readServerTestFrame(t, &out)
+	output := outputFrame.GetSetOutput()
+	if output == nil {
+		t.Fatalf("first response body = %T, want set output", outputFrame.Body)
+	}
+	value := output.GetValue()
+	var raw map[string]any
+	if err := json.Unmarshal(value.GetPayload(), &raw); err != nil {
+		t.Fatalf("decode raw payload: %v", err)
+	}
+	if raw["secret"] != "token" || raw["public"] != "visible" {
+		t.Fatalf("raw payload = %#v", raw)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(value.GetReportPayload(), &report); err != nil {
+		t.Fatalf("decode report payload: %v", err)
+	}
+	if report["public"] != "visible" {
+		t.Fatalf("report payload = %#v", report)
+	}
+	if _, ok := report["secret"]; ok {
+		t.Fatalf("report payload exposed secret: %#v", report)
+	}
+}
+
+func TestServerRunFallsBackToRawReportPayloadForPlainReportableOutput(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{plainReportUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "plain",
+			Kind:              "demo.plain_report/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       1,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+
+	outputFrame := readServerTestFrame(t, &out)
+	value := outputFrame.GetSetOutput().GetValue()
+	if !bytes.Equal(value.GetPayload(), value.GetReportPayload()) {
+		t.Fatalf("report payload = %s, want raw payload %s", value.GetReportPayload(), value.GetPayload())
+	}
+}
+
+func TestServerRunSendsMetricFlush(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{metricFlushUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "metrics",
+			Kind:              "demo.metric_flush/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       1,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+
+	metricFrame := readServerTestFrame(t, &out)
+	flush := metricFrame.GetMetricFlush()
+	if flush == nil {
+		t.Fatalf("first response body = %T, want metric flush", metricFrame.Body)
+	}
+	if len(flush.GetMetrics()) != 2 {
+		t.Fatalf("metrics = %#v", flush.GetMetrics())
+	}
+	counter := flush.GetMetrics()[0]
+	if counter.GetName() != "attempt_total" || counter.GetType() != "counter" || counter.GetCount() != 2 || counter.GetSum() != 3 || counter.GetLabels()["route"] != "a" {
+		t.Fatalf("counter snapshot = %#v", counter)
+	}
+	duration := flush.GetMetrics()[1]
+	if duration.GetName() != "latency" || duration.GetType() != "duration" || duration.GetCount() != 2 ||
+		math.Abs(duration.GetSum()-0.004) > 0.0000001 ||
+		math.Abs(duration.GetMin()-0.001) > 0.0000001 ||
+		math.Abs(duration.GetMax()-0.003) > 0.0000001 {
+		t.Fatalf("duration snapshot = %#v", duration)
+	}
+	terminalFrame := readServerTestFrame(t, &out)
+	if status := terminalFrame.GetTerminalStatus(); status == nil || !status.GetOk() {
+		t.Fatalf("terminal status = %#v", status)
+	}
+}
+
 func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
 	t.Helper()
 	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
@@ -238,4 +354,83 @@ func (workerCountUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract
 }
 func (workerCountUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	return env.SetOutput("worker_count", env.WorkerCount())
+}
+
+type secretReportUnit struct{}
+
+func (secretReportUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.secret_report/v1",
+		Outputs: []contract.PortDef{{
+			Name: "result",
+			Type: "port.demo.secret_report/v1",
+			Meta: contract.PortMeta{Reportable: true},
+		}},
+	}
+}
+func (secretReportUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (secretReportUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (secretReportUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	return env.SetOutput("result", secretReportValue{Secret: "token", Public: "visible"})
+}
+
+type secretReportValue struct {
+	Secret string `json:"secret"`
+	Public string `json:"public"`
+}
+
+func (v secretReportValue) ReportOutput() any {
+	return map[string]any{"public": v.Public}
+}
+
+type plainReportUnit struct{}
+
+func (plainReportUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.plain_report/v1",
+		Outputs: []contract.PortDef{{
+			Name: "result",
+			Type: "port.demo.plain_report/v1",
+			Meta: contract.PortMeta{Reportable: true},
+		}},
+	}
+}
+func (plainReportUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (plainReportUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (plainReportUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	return env.SetOutput("result", map[string]any{"message": "visible"})
+}
+
+type metricFlushUnit struct{}
+
+func (metricFlushUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.metric_flush/v1",
+		Metrics: []contract.MetricDef{
+			{Name: "attempt_total", Type: "counter"},
+			{Name: "latency", Type: "duration"},
+		},
+	}
+}
+func (metricFlushUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (metricFlushUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (metricFlushUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	labels := contract.Labels{"route": "a"}
+	env.EmitCounter("attempt_total", 1, labels)
+	env.EmitCounter("attempt_total", 2, labels)
+	env.ObserveDuration("latency", time.Millisecond, nil)
+	env.ObserveDuration("latency", 3*time.Millisecond, nil)
+	return nil
 }

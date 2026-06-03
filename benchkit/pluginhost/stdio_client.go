@@ -257,6 +257,8 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 			if err := setOutputFromFrame(env, body.SetOutput); err != nil {
 				return err
 			}
+		case *protocol.Frame_MetricFlush:
+			applyMetricFlush(env, body.MetricFlush)
 		case *protocol.Frame_TerminalStatus:
 			if body.TerminalStatus.GetOk() {
 				return nil
@@ -344,7 +346,13 @@ func setOutputFromFrame(env contract.RunEnv, output *protocol.SetOutput) error {
 	}
 	stored := decoded
 	if value.GetReportable() && !value.GetSensitive() {
-		stored = remoteReportableOutput{value: decoded}
+		reportValue := decoded
+		if len(value.GetReportPayload()) > 0 {
+			if err := json.Unmarshal(value.GetReportPayload(), &reportValue); err != nil {
+				return fmt.Errorf("decode output %q report json: %w", output.GetName(), err)
+			}
+		}
+		stored = remoteReportableOutput{value: decoded, reportValue: reportValue}
 	}
 	if err := env.SetOutput(output.GetName(), stored); err != nil {
 		return fmt.Errorf("set output %q: %w", output.GetName(), err)
@@ -353,11 +361,12 @@ func setOutputFromFrame(env contract.RunEnv, output *protocol.SetOutput) error {
 }
 
 type remoteReportableOutput struct {
-	value any
+	value       any
+	reportValue any
 }
 
 func (o remoteReportableOutput) ReportOutput() any {
-	return o.value
+	return o.reportValue
 }
 
 func (o remoteReportableOutput) OutputValue() any {
@@ -366,6 +375,57 @@ func (o remoteReportableOutput) OutputValue() any {
 
 func (o remoteReportableOutput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(o.value)
+}
+
+func applyMetricFlush(env contract.RunEnv, flush *protocol.MetricFlush) {
+	if flush == nil {
+		return
+	}
+	for _, metric := range flush.GetMetrics() {
+		if metric == nil || metric.GetCount() <= 0 {
+			continue
+		}
+		labels := contract.Labels(metric.GetLabels())
+		switch metric.GetType() {
+		case "duration":
+			replayDurationSnapshot(env, metric, labels)
+		default:
+			replayCounterSnapshot(env, metric, labels)
+		}
+	}
+}
+
+func replayCounterSnapshot(env contract.RunEnv, metric *protocol.MetricSnapshot, labels contract.Labels) {
+	count := metric.GetCount()
+	delta := metric.GetSum() / float64(count)
+	for i := int64(0); i < count; i++ {
+		env.EmitCounter(metric.GetName(), delta, labels)
+	}
+}
+
+func replayDurationSnapshot(env contract.RunEnv, metric *protocol.MetricSnapshot, labels contract.Labels) {
+	count := metric.GetCount()
+	if count == 1 {
+		env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetSum()), labels)
+		return
+	}
+	// MetricFlush carries aggregates, not raw samples. Replay a compact sample
+	// set that preserves report count, sum, min, and max.
+	env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetMin()), labels)
+	env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetMax()), labels)
+	if count == 2 {
+		return
+	}
+	remainingCount := count - 2
+	remainingSum := metric.GetSum() - metric.GetMin() - metric.GetMax()
+	average := remainingSum / float64(remainingCount)
+	for i := int64(0); i < remainingCount; i++ {
+		env.ObserveDuration(metric.GetName(), secondsDuration(average), labels)
+	}
+}
+
+func secondsDuration(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func pluginRPCError(err *protocol.Error) error {

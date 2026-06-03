@@ -182,26 +182,64 @@ func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *prot
 		if err != nil {
 			return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 		}
+		var reportPayload []byte
+		if output.Meta.Reportable && !output.Meta.Sensitive {
+			reportValue := value
+			if reportable, ok := value.(contract.ReportableOutput); ok {
+				reportValue = reportable.ReportOutput()
+			}
+			reportPayload, err = encodeJSONPayload(reportValue)
+			if err != nil {
+				return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+			}
+		}
 		if err := writer.WriteFrame(&protocol.Frame{
 			RequestId: frame.GetRequestId(),
 			Body: &protocol.Frame_SetOutput{SetOutput: &protocol.SetOutput{
 				Name: output.Name,
 				Value: &protocol.PortValue{
-					Type:       string(output.Type),
-					Encoding:   "json",
-					Transport:  string(output.Meta.Transport),
-					Sensitive:  output.Meta.Sensitive,
-					Reportable: output.Meta.Reportable,
-					Payload:    payload,
+					Type:          string(output.Type),
+					Encoding:      "json",
+					Transport:     string(output.Meta.Transport),
+					Sensitive:     output.Meta.Sensitive,
+					Reportable:    output.Meta.Reportable,
+					Payload:       payload,
+					ReportPayload: reportPayload,
 				},
 			}},
 		}); err != nil {
 			return err
 		}
 	}
+	if err := s.writeMetricFlush(frame.GetRequestId(), env, writer); err != nil {
+		return err
+	}
 	return writer.WriteFrame(&protocol.Frame{
 		RequestId: frame.GetRequestId(),
 		Body:      &protocol.Frame_TerminalStatus{TerminalStatus: &protocol.TerminalStatus{Ok: true}},
+	})
+}
+
+func (s *server) writeMetricFlush(requestID string, env *contract.TestRunEnv, writer *protocol.FrameWriter) error {
+	snapshots := env.MetricSnapshots()
+	if len(snapshots) == 0 {
+		return nil
+	}
+	metrics := make([]*protocol.MetricSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		metrics = append(metrics, &protocol.MetricSnapshot{
+			Name:   snapshot.Name,
+			Type:   snapshot.Type,
+			Labels: map[string]string(snapshot.Labels),
+			Count:  snapshot.Count,
+			Sum:    snapshot.Sum,
+			Min:    snapshot.Min,
+			Max:    snapshot.Max,
+		})
+	}
+	return writer.WriteFrame(&protocol.Frame{
+		RequestId: requestID,
+		Body:      &protocol.Frame_MetricFlush{MetricFlush: &protocol.MetricFlush{Metrics: metrics}},
 	})
 }
 

@@ -141,6 +141,7 @@ message PortValue {
   bool sensitive = 4;
   bool reportable = 5;
   bytes payload = 6;
+  bytes report_payload = 7;
 }
 
 message MetricFlush {

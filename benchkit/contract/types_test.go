@@ -80,6 +80,32 @@ func TestTestRunEnvWorkerCountDefaultsToOneAndCanBeSet(t *testing.T) {
 	}
 }
 
+func TestTestRunEnvMetricSnapshotsPreserveLabelsAndAggregates(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "traffic", nil, nil)
+	env.EmitCounter("attempt_total", 1, contract.Labels{"route": "a"})
+	env.EmitCounter("attempt_total", 2, contract.Labels{"route": "a"})
+	env.ObserveDuration("latency", time.Millisecond, contract.Labels{"route": "b"})
+	env.ObserveDuration("latency", 3*time.Millisecond, contract.Labels{"route": "b"})
+
+	snapshots := env.MetricSnapshots()
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+	counter := snapshots[0]
+	if counter.Name != "attempt_total" || counter.Type != "counter" || counter.Count != 2 || counter.Sum != 3 || counter.Labels["route"] != "a" {
+		t.Fatalf("counter snapshot = %#v", counter)
+	}
+	duration := snapshots[1]
+	if duration.Name != "latency" || duration.Type != "duration" || duration.Count != 2 ||
+		duration.Sum != 0.004 || duration.Min != 0.001 || duration.Max != 0.003 || duration.Labels["route"] != "b" {
+		t.Fatalf("duration snapshot = %#v", duration)
+	}
+	snapshots[0].Labels["route"] = "mutated"
+	if env.MetricSnapshots()[0].Labels["route"] != "a" {
+		t.Fatal("MetricSnapshots must return cloned labels")
+	}
+}
+
 func TestTestRunEnvWritesDeclaredArtifact(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
 	env.DeclareArtifacts([]contract.ArtifactDef{

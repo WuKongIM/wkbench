@@ -1419,6 +1419,7 @@ type PortValue struct {
 	Sensitive     bool                   `protobuf:"varint,4,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	Reportable    bool                   `protobuf:"varint,5,opt,name=reportable,proto3" json:"reportable,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,6,opt,name=payload,proto3" json:"payload,omitempty"`
+	ReportPayload []byte                 `protobuf:"bytes,7,opt,name=report_payload,json=reportPayload,proto3" json:"report_payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1491,6 +1492,13 @@ func (x *PortValue) GetReportable() bool {
 func (x *PortValue) GetPayload() []byte {
 	if x != nil {
 		return x.Payload
+	}
+	return nil
+}
+
+func (x *PortValue) GetReportPayload() []byte {
+	if x != nil {
+		return x.ReportPayload
 	}
 	return nil
 }
@@ -1898,7 +1906,7 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x0eRunEnvResponse\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x122\n" +
-	"\x05value\x18\x03 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value\"\xb1\x01\n" +
+	"\x05value\x18\x03 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value\"\xd8\x01\n" +
 	"\tPortValue\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bencoding\x18\x02 \x01(\tR\bencoding\x12\x1c\n" +
@@ -1907,7 +1915,8 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\n" +
 	"reportable\x18\x05 \x01(\bR\n" +
 	"reportable\x12\x18\n" +
-	"\apayload\x18\x06 \x01(\fR\apayload\"J\n" +
+	"\apayload\x18\x06 \x01(\fR\apayload\x12%\n" +
+	"\x0ereport_payload\x18\a \x01(\fR\rreportPayload\"J\n" +
 	"\vMetricFlush\x12;\n" +
 	"\ametrics\x18\x01 \x03(\v2!.wkbench.plugin.v1.MetricSnapshotR\ametrics\"\x86\x02\n" +
 	"\x0eMetricSnapshot\x12\x12\n" +

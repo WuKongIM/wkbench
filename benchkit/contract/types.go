@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -229,6 +231,17 @@ type Plan struct {
 	Shards []any `json:"shards,omitempty"`
 }
 
+// MetricSnapshot is an aggregate metric view recorded by TestRunEnv.
+type MetricSnapshot struct {
+	Name   string  `json:"name"`
+	Type   string  `json:"type"`
+	Labels Labels  `json:"labels,omitempty"`
+	Count  int64   `json:"count"`
+	Sum    float64 `json:"sum"`
+	Min    float64 `json:"min,omitempty"`
+	Max    float64 `json:"max,omitempty"`
+}
+
 // Rate represents a per-second operation rate.
 type Rate struct {
 	// PerSecond is the number of operations per second.
@@ -337,6 +350,7 @@ type TestRunEnv struct {
 	outputs      map[string]any
 	counters     map[string]float64
 	durations    map[string][]time.Duration
+	metrics      map[string]MetricSnapshot
 	artifactDefs map[string]ArtifactDef
 	artifacts    map[string]ArtifactInfo
 	runDuration  time.Duration
@@ -356,6 +370,7 @@ func NewTestRunEnv(runID, unitName string, inputs map[string]any, spec map[strin
 		outputs:      make(map[string]any),
 		counters:     make(map[string]float64),
 		durations:    make(map[string][]time.Duration),
+		metrics:      make(map[string]MetricSnapshot),
 		artifactDefs: make(map[string]ArtifactDef),
 		artifacts:    make(map[string]ArtifactInfo),
 		runDuration:  time.Second,
@@ -424,6 +439,16 @@ func (e *TestRunEnv) EmitCounter(name string, delta float64, labels Labels) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.counters[name] += delta
+	key := metricSnapshotKey(name, labels)
+	snapshot := e.metrics[key]
+	if snapshot.Type == "" {
+		snapshot.Name = name
+		snapshot.Type = "counter"
+		snapshot.Labels = cloneLabels(labels)
+	}
+	snapshot.Count++
+	snapshot.Sum += delta
+	e.metrics[key] = snapshot
 }
 
 // CounterValue returns the current test counter value.
@@ -438,6 +463,26 @@ func (e *TestRunEnv) ObserveDuration(name string, value time.Duration, labels La
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.durations[name] = append(e.durations[name], value)
+	seconds := value.Seconds()
+	key := metricSnapshotKey(name, labels)
+	snapshot := e.metrics[key]
+	if snapshot.Type == "" {
+		snapshot.Name = name
+		snapshot.Type = "duration"
+		snapshot.Labels = cloneLabels(labels)
+		snapshot.Min = seconds
+		snapshot.Max = seconds
+	} else {
+		if seconds < snapshot.Min {
+			snapshot.Min = seconds
+		}
+		if seconds > snapshot.Max {
+			snapshot.Max = seconds
+		}
+	}
+	snapshot.Count++
+	snapshot.Sum += seconds
+	e.metrics[key] = snapshot
 }
 
 // DurationValues returns recorded duration samples for name.
@@ -446,6 +491,54 @@ func (e *TestRunEnv) DurationValues(name string) []time.Duration {
 	defer e.mu.Unlock()
 	values := e.durations[name]
 	return append([]time.Duration(nil), values...)
+}
+
+// MetricSnapshots returns aggregate metrics emitted by this environment.
+func (e *TestRunEnv) MetricSnapshots() []MetricSnapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.metrics) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(e.metrics))
+	for key := range e.metrics {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]MetricSnapshot, 0, len(keys))
+	for _, key := range keys {
+		snapshot := e.metrics[key]
+		snapshot.Labels = cloneLabels(snapshot.Labels)
+		out = append(out, snapshot)
+	}
+	return out
+}
+
+func metricSnapshotKey(name string, labels Labels) string {
+	if len(labels) == 0 {
+		return name
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(labels[key]))
+	}
+	return name + "{" + strings.Join(parts, ",") + "}"
+}
+
+func cloneLabels(labels Labels) Labels {
+	if len(labels) == 0 {
+		return nil
+	}
+	clone := make(Labels, len(labels))
+	for key, value := range labels {
+		clone[key] = value
+	}
+	return clone
 }
 
 // DeclareArtifacts sets the artifact declarations accepted by OpenArtifact.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,10 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
+	"github.com/WuKongIM/wkbench/benchkit/dsl"
+	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	"github.com/WuKongIM/wkbench/benchkit/protocol"
+	"github.com/WuKongIM/wkbench/benchkit/registry"
 )
 
 func TestStdioClientListsDemoPluginUnits(t *testing.T) {
@@ -98,7 +102,10 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 }
 
 func TestRemoteReportableOutputReportsAndMarshalsWrappedValue(t *testing.T) {
-	output := remoteReportableOutput{value: map[string]any{"message": "hello"}}
+	output := remoteReportableOutput{
+		value:       map[string]any{"message": "hello", "secret": "token"},
+		reportValue: map[string]any{"message": "hello"},
+	}
 	reported, ok := output.ReportOutput().(map[string]any)
 	if !ok {
 		t.Fatalf("report output type = %T, want map[string]any", output.ReportOutput())
@@ -106,12 +113,68 @@ func TestRemoteReportableOutputReportsAndMarshalsWrappedValue(t *testing.T) {
 	if reported["message"] != "hello" {
 		t.Fatalf("reported message = %#v", reported["message"])
 	}
+	if _, ok := reported["secret"]; ok {
+		t.Fatalf("report output exposed secret: %#v", reported)
+	}
+	raw, ok := output.OutputValue().(map[string]any)
+	if !ok {
+		t.Fatalf("raw output type = %T, want map[string]any", output.OutputValue())
+	}
+	if raw["secret"] != "token" {
+		t.Fatalf("raw output = %#v", raw)
+	}
 	data, err := json.Marshal(output)
 	if err != nil {
 		t.Fatalf("marshal output: %v", err)
 	}
-	if string(data) != `{"message":"hello"}` {
+	if string(data) != `{"message":"hello","secret":"token"}` {
 		t.Fatalf("json = %s", data)
+	}
+}
+
+func TestSetOutputFromFrameUsesSeparateReportPayload(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "unit", nil, nil)
+
+	if err := setOutputFromFrame(env, &protocol.SetOutput{
+		Name: "result",
+		Value: &protocol.PortValue{
+			Encoding:      "json",
+			Reportable:    true,
+			Payload:       []byte(`{"public":"visible","secret":"token"}`),
+			ReportPayload: []byte(`{"public":"visible"}`),
+		},
+	}); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+
+	output, ok := env.Output("result")
+	if !ok {
+		t.Fatal("missing result output")
+	}
+	wrapper, ok := output.(contract.OutputWrapper)
+	if !ok {
+		t.Fatalf("output type = %T, want OutputWrapper", output)
+	}
+	raw, ok := wrapper.OutputValue().(map[string]any)
+	if !ok {
+		t.Fatalf("raw type = %T, want map[string]any", wrapper.OutputValue())
+	}
+	if raw["secret"] != "token" || raw["public"] != "visible" {
+		t.Fatalf("raw value = %#v", raw)
+	}
+	reportable, ok := output.(contract.ReportableOutput)
+	if !ok {
+		t.Fatalf("output type = %T, want ReportableOutput", output)
+	}
+	report, ok := reportable.ReportOutput().(map[string]any)
+	if !ok {
+		t.Fatalf("report type = %T, want map[string]any", reportable.ReportOutput())
+	}
+	if report["public"] != "visible" {
+		t.Fatalf("report value = %#v", report)
+	}
+	if _, ok := report["secret"]; ok {
+		t.Fatalf("report exposed secret: %#v", report)
 	}
 }
 
@@ -165,6 +228,51 @@ func TestSetOutputFromFrameDoesNotExposeSensitiveReportableOutput(t *testing.T) 
 	}
 	if _, ok := output.(contract.ReportableOutput); ok {
 		t.Fatalf("sensitive output implements ReportableOutput: %T", output)
+	}
+}
+
+func TestStdioClientForwardsRunMetricsToKernelReport(t *testing.T) {
+	bin := buildMetricPlugin(t)
+
+	client, err := StartStdioClient(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("close client: %v", err)
+		}
+	}()
+	manifest, err := client.Handshake(context.Background())
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	reg := registry.New()
+	for _, unit := range manifest.Units {
+		reg.MustRegister(NewRemoteUnit(client, unit))
+	}
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "remote-metrics"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "demo.metrics/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	metrics := result.Units["metrics"].Metrics
+	counter := metrics["attempt_total{route=a}"]
+	if counter.Type != "counter" || counter.Count != 2 || counter.Sum != 3 || counter.Labels["route"] != "a" {
+		t.Fatalf("counter metric = %#v", counter)
+	}
+	duration := metrics["latency"]
+	if duration.Type != "duration" || duration.Count != 2 ||
+		math.Abs(duration.Sum-0.004) > 0.0000001 ||
+		math.Abs(duration.Min-0.001) > 0.0000001 ||
+		math.Abs(duration.Max-0.003) > 0.0000001 {
+		t.Fatalf("duration metric = %#v", duration)
 	}
 }
 
@@ -231,6 +339,68 @@ func buildDemoPlugin(t *testing.T) string {
 	build.Dir = repoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build plugin: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func buildMetricPlugin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.go")
+	source := `package main
+
+import (
+	"context"
+	"os"
+	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{
+		Name:    "wkbench.demo.metrics",
+		Version: "0.1.0",
+		Units:   []contract.Unit{metricUnit{}},
+	}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+
+type metricUnit struct{}
+
+func (metricUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.metrics/v1",
+		Metrics: []contract.MetricDef{
+			{Name: "attempt_total", Type: "counter"},
+			{Name: "latency", Type: "duration"},
+		},
+	}
+}
+func (metricUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (metricUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (metricUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	labels := contract.Labels{"route": "a"}
+	env.EmitCounter("attempt_total", 1, labels)
+	env.EmitCounter("attempt_total", 2, labels)
+	env.ObserveDuration("latency", time.Millisecond, nil)
+	env.ObserveDuration("latency", 3*time.Millisecond, nil)
+	return nil
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "wkbench-metric-plugin")
+	build := exec.Command("go", "build", "-o", bin, sourcePath)
+	build.Env = append(os.Environ(), "GOWORK=off")
+	build.Dir = repoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build metric plugin: %v\n%s", err, out)
 	}
 	return bin
 }
