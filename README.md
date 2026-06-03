@@ -36,6 +36,24 @@ List built-in units:
 GOWORK=off go run ./cmd/wkbench list-units
 ```
 
+## External Plugins
+
+Phase 1 supports loading external plugin executables with the global `-plugin`
+flag:
+
+```bash
+GOWORK=off go build -o /tmp/wkbench-demo-plugin ./plugins/demo/cmd/wkbench-demo-plugin
+GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin list-units
+GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin validate -scenario ./examples/plugin-echo.yaml
+GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin run -scenario ./examples/plugin-echo.yaml
+```
+
+Scenario YAML can reference external units as `<plugin-name>:<kind>`, for
+example `wkbench.demo:demo.echo/v1`. During Phase 1, official units still run
+in-process while external plugin units are registered as remote proxies. The
+final architecture will remove direct unit registration from the host binary
+after migration.
+
 Create a new unit skeleton:
 
 ```bash
