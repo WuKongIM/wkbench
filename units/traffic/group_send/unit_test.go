@@ -16,8 +16,11 @@ import (
 func TestGroupSendUsesPortsAndEmitsSummary(t *testing.T) {
 	unit := groupsend.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"channels": fakeGroupSet{},
-		"sender":   &fakeGroupSender{},
+		"channels": channelport.GroupSetData{Items: []channelport.GroupChannel{
+			{ChannelID: "g-a", Members: []string{"u1", "u2"}},
+			{ChannelID: "g-b", Members: []string{"u1", "u2"}},
+		}},
+		"sender": &fakeGroupSender{},
 	}, map[string]any{
 		"rate":         "2/s",
 		"payload_size": 32,
@@ -101,19 +104,6 @@ func TestGroupSendDeclaresDurationMetric(t *testing.T) {
 		}
 	}
 	t.Fatal("sendack_latency metric is not declared")
-}
-
-type fakeGroupSet struct{}
-
-func (fakeGroupSet) Count() int {
-	return 2
-}
-
-func (fakeGroupSet) At(index int) channelport.GroupChannel {
-	return channelport.GroupChannel{
-		ChannelID: "g-" + string(rune('a'+index)),
-		Members:   []string{"u1", "u2"},
-	}
 }
 
 type fakeGroupSender struct {

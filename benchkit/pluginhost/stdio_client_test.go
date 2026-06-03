@@ -1,6 +1,7 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,7 +59,8 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 		}
 	}()
 
-	if _, err := client.Handshake(context.Background()); err != nil {
+	manifest, err := client.Handshake(context.Background())
+	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
 	req := UnitRequest{
@@ -82,6 +84,7 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	}
 
 	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	env.DeclareArtifacts(manifest.Units[0].Artifacts)
 	if err := client.Run(context.Background(), RunRequest{UnitRequest: req}, env); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -232,6 +235,70 @@ func TestSetOutputFromFrameDoesNotExposeSensitiveReportableOutput(t *testing.T) 
 	}
 }
 
+func TestArtifactFrameHandlerWritesHostArtifact(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "remote", nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{{Name: "metrics.jsonl", ContentType: "application/jsonl"}})
+	env.SetReportDir(t.TempDir())
+	state := newRunArtifactState(env)
+
+	opened, err := state.open(&protocol.ArtifactOpen{Name: "metrics.jsonl"})
+	if err != nil {
+		t.Fatalf("open artifact: %v", err)
+	}
+	if opened.GetHandle() == "" || opened.GetName() != "metrics.jsonl" {
+		t.Fatalf("unexpected opened response: %#v", opened)
+	}
+	if err := state.write(&protocol.ArtifactChunk{Handle: opened.GetHandle(), Sequence: 1, Data: []byte("{\"ok\":true}\n")}); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	closed, err := state.close(&protocol.ArtifactClose{Handle: opened.GetHandle()})
+	if err != nil {
+		t.Fatalf("close artifact: %v", err)
+	}
+	if closed.GetSizeBytes() != int64(len("{\"ok\":true}\n")) {
+		t.Fatalf("size = %d", closed.GetSizeBytes())
+	}
+	info := env.Artifacts()["metrics.jsonl"]
+	if info.ContentType != "application/jsonl" || info.SizeBytes != closed.GetSizeBytes() {
+		t.Fatalf("artifact info = %#v", info)
+	}
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(data) != "{\"ok\":true}\n" {
+		t.Fatalf("artifact payload = %q", data)
+	}
+}
+
+func TestArtifactFrameHandlerRejectsUnknownHandle(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "remote", nil, nil)
+	state := newRunArtifactState(env)
+
+	err := state.write(&protocol.ArtifactChunk{Handle: "missing", Sequence: 1, Data: []byte("x")})
+	if err == nil || !strings.Contains(err.Error(), "unknown artifact handle") {
+		t.Fatalf("error = %v, want unknown handle", err)
+	}
+}
+
+func TestWriteRunArtifactErrorSendsProtocolErrorFrame(t *testing.T) {
+	var out bytes.Buffer
+	sourceErr := errors.New("report_dir is required")
+
+	err := writeRunArtifactError(protocol.NewFrameWriter(&out), "run-1", "scenario-1", "echo", sourceErr)
+	if err == nil || !strings.Contains(err.Error(), sourceErr.Error()) {
+		t.Fatalf("error = %v, want source error", err)
+	}
+	frame := readPluginHostTestFrame(t, &out)
+	if frame.GetRequestId() != "run-1" || frame.GetRunId() != "scenario-1" || frame.GetUnitInstanceId() != "echo" {
+		t.Fatalf("frame ids = %#v", frame)
+	}
+	rpcErr := frame.GetError()
+	if rpcErr == nil || rpcErr.GetCode() != "ARTIFACT_ERROR" || !strings.Contains(rpcErr.GetMessage(), sourceErr.Error()) {
+		t.Fatalf("rpc error = %#v", rpcErr)
+	}
+}
+
 func TestEncodeInputPortValuesRejectsUnsupportedPhase1Metadata(t *testing.T) {
 	tests := []struct {
 		name string
@@ -296,6 +363,15 @@ func TestEncodeInputPortValuesRejectsUnsupportedPhase1Metadata(t *testing.T) {
 			}
 		})
 	}
+}
+
+func readPluginHostTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
+	t.Helper()
+	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	return frame
 }
 
 func TestEncodeInputPortValuesRejectsOversizedPayload(t *testing.T) {

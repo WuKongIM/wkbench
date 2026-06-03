@@ -1,0 +1,20 @@
+version: wkbench/v2
+
+run:
+  id: official-data-plugin-demo
+  duration: 1s
+  report_dir: ./reports/official-data-plugin-demo
+
+units:
+  identities:
+    use: wkbench.official.data:identity.pool/v1
+    spec:
+      total: 4
+
+  pairs:
+    use: wkbench.official.data:identity.person_pairs/v1
+    inputs:
+      identities: identities.pool
+    spec:
+      count: 3
+      mode: ring

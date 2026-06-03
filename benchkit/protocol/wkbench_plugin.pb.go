@@ -43,6 +43,11 @@ type Frame struct {
 	//	*Frame_SetOutput
 	//	*Frame_TerminalStatus
 	//	*Frame_Error
+	//	*Frame_ArtifactOpen
+	//	*Frame_ArtifactOpened
+	//	*Frame_ArtifactChunk
+	//	*Frame_ArtifactClose
+	//	*Frame_ArtifactClosed
 	Body          isFrame_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -241,6 +246,51 @@ func (x *Frame) GetError() *Error {
 	return nil
 }
 
+func (x *Frame) GetArtifactOpen() *ArtifactOpen {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_ArtifactOpen); ok {
+			return x.ArtifactOpen
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetArtifactOpened() *ArtifactOpened {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_ArtifactOpened); ok {
+			return x.ArtifactOpened
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetArtifactChunk() *ArtifactChunk {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_ArtifactChunk); ok {
+			return x.ArtifactChunk
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetArtifactClose() *ArtifactClose {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_ArtifactClose); ok {
+			return x.ArtifactClose
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetArtifactClosed() *ArtifactClosed {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_ArtifactClosed); ok {
+			return x.ArtifactClosed
+		}
+	}
+	return nil
+}
+
 type isFrame_Body interface {
 	isFrame_Body()
 }
@@ -305,6 +355,26 @@ type Frame_Error struct {
 	Error *Error `protobuf:"bytes,24,opt,name=error,proto3,oneof"`
 }
 
+type Frame_ArtifactOpen struct {
+	ArtifactOpen *ArtifactOpen `protobuf:"bytes,25,opt,name=artifact_open,json=artifactOpen,proto3,oneof"`
+}
+
+type Frame_ArtifactOpened struct {
+	ArtifactOpened *ArtifactOpened `protobuf:"bytes,26,opt,name=artifact_opened,json=artifactOpened,proto3,oneof"`
+}
+
+type Frame_ArtifactChunk struct {
+	ArtifactChunk *ArtifactChunk `protobuf:"bytes,27,opt,name=artifact_chunk,json=artifactChunk,proto3,oneof"`
+}
+
+type Frame_ArtifactClose struct {
+	ArtifactClose *ArtifactClose `protobuf:"bytes,28,opt,name=artifact_close,json=artifactClose,proto3,oneof"`
+}
+
+type Frame_ArtifactClosed struct {
+	ArtifactClosed *ArtifactClosed `protobuf:"bytes,29,opt,name=artifact_closed,json=artifactClosed,proto3,oneof"`
+}
+
 func (*Frame_HandshakeRequest) isFrame_Body() {}
 
 func (*Frame_HandshakeResponse) isFrame_Body() {}
@@ -334,6 +404,16 @@ func (*Frame_SetOutput) isFrame_Body() {}
 func (*Frame_TerminalStatus) isFrame_Body() {}
 
 func (*Frame_Error) isFrame_Body() {}
+
+func (*Frame_ArtifactOpen) isFrame_Body() {}
+
+func (*Frame_ArtifactOpened) isFrame_Body() {}
+
+func (*Frame_ArtifactChunk) isFrame_Body() {}
+
+func (*Frame_ArtifactClose) isFrame_Body() {}
+
+func (*Frame_ArtifactClosed) isFrame_Body() {}
 
 type HandshakeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1691,6 +1771,258 @@ func (x *SetOutput) GetValue() *PortValue {
 	return nil
 }
 
+type ArtifactOpen struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArtifactOpen) Reset() {
+	*x = ArtifactOpen{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArtifactOpen) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArtifactOpen) ProtoMessage() {}
+
+func (x *ArtifactOpen) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArtifactOpen.ProtoReflect.Descriptor instead.
+func (*ArtifactOpen) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ArtifactOpen) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type ArtifactOpened struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Handle        string                 `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArtifactOpened) Reset() {
+	*x = ArtifactOpened{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArtifactOpened) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArtifactOpened) ProtoMessage() {}
+
+func (x *ArtifactOpened) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArtifactOpened.ProtoReflect.Descriptor instead.
+func (*ArtifactOpened) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ArtifactOpened) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ArtifactOpened) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+type ArtifactChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Sequence      int64                  `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArtifactChunk) Reset() {
+	*x = ArtifactChunk{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArtifactChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArtifactChunk) ProtoMessage() {}
+
+func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArtifactChunk.ProtoReflect.Descriptor instead.
+func (*ArtifactChunk) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ArtifactChunk) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *ArtifactChunk) GetSequence() int64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *ArtifactChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type ArtifactClose struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArtifactClose) Reset() {
+	*x = ArtifactClose{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArtifactClose) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArtifactClose) ProtoMessage() {}
+
+func (x *ArtifactClose) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArtifactClose.ProtoReflect.Descriptor instead.
+func (*ArtifactClose) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ArtifactClose) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+type ArtifactClosed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArtifactClosed) Reset() {
+	*x = ArtifactClosed{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArtifactClosed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArtifactClosed) ProtoMessage() {}
+
+func (x *ArtifactClosed) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArtifactClosed.ProtoReflect.Descriptor instead.
+func (*ArtifactClosed) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ArtifactClosed) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *ArtifactClosed) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
 type TerminalStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
@@ -1701,7 +2033,7 @@ type TerminalStatus struct {
 
 func (x *TerminalStatus) Reset() {
 	*x = TerminalStatus{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +2045,7 @@ func (x *TerminalStatus) String() string {
 func (*TerminalStatus) ProtoMessage() {}
 
 func (x *TerminalStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +2058,7 @@ func (x *TerminalStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalStatus.ProtoReflect.Descriptor instead.
 func (*TerminalStatus) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{22}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *TerminalStatus) GetOk() bool {
@@ -1753,7 +2085,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1765,7 +2097,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1778,7 +2110,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{23}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Error) GetCode() string {
@@ -1799,7 +2131,7 @@ var File_benchkit_protocol_wkbench_plugin_proto protoreflect.FileDescriptor
 
 const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\n" +
-	"&benchkit/protocol/wkbench_plugin.proto\x12\x11wkbench.plugin.v1\"\xda\t\n" +
+	"&benchkit/protocol/wkbench_plugin.proto\x12\x11wkbench.plugin.v1\"\xd4\f\n" +
 	"\x05Frame\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x15\n" +
@@ -1822,7 +2154,12 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\n" +
 	"set_output\x18\x16 \x01(\v2\x1c.wkbench.plugin.v1.SetOutputH\x00R\tsetOutput\x12L\n" +
 	"\x0fterminal_status\x18\x17 \x01(\v2!.wkbench.plugin.v1.TerminalStatusH\x00R\x0eterminalStatus\x120\n" +
-	"\x05error\x18\x18 \x01(\v2\x18.wkbench.plugin.v1.ErrorH\x00R\x05errorB\x06\n" +
+	"\x05error\x18\x18 \x01(\v2\x18.wkbench.plugin.v1.ErrorH\x00R\x05error\x12F\n" +
+	"\rartifact_open\x18\x19 \x01(\v2\x1f.wkbench.plugin.v1.ArtifactOpenH\x00R\fartifactOpen\x12L\n" +
+	"\x0fartifact_opened\x18\x1a \x01(\v2!.wkbench.plugin.v1.ArtifactOpenedH\x00R\x0eartifactOpened\x12I\n" +
+	"\x0eartifact_chunk\x18\x1b \x01(\v2 .wkbench.plugin.v1.ArtifactChunkH\x00R\rartifactChunk\x12I\n" +
+	"\x0eartifact_close\x18\x1c \x01(\v2 .wkbench.plugin.v1.ArtifactCloseH\x00R\rartifactClose\x12L\n" +
+	"\x0fartifact_closed\x18\x1d \x01(\v2!.wkbench.plugin.v1.ArtifactClosedH\x00R\x0eartifactClosedB\x06\n" +
 	"\x04body\"}\n" +
 	"\x10HandshakeRequest\x12#\n" +
 	"\rhost_protocol\x18\x01 \x01(\tR\fhostProtocol\x12!\n" +
@@ -1932,7 +2269,22 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
 	"\tSetOutput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
-	"\x05value\x18\x02 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value\"P\n" +
+	"\x05value\x18\x02 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value\"\"\n" +
+	"\fArtifactOpen\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"<\n" +
+	"\x0eArtifactOpened\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06handle\x18\x02 \x01(\tR\x06handle\"W\n" +
+	"\rArtifactChunk\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\x12\x1a\n" +
+	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"'\n" +
+	"\rArtifactClose\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\"G\n" +
+	"\x0eArtifactClosed\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\"P\n" +
 	"\x0eTerminalStatus\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12.\n" +
 	"\x05error\x18\x02 \x01(\v2\x18.wkbench.plugin.v1.ErrorR\x05error\"5\n" +
@@ -1952,7 +2304,7 @@ func file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP() []byte {
 	return file_benchkit_protocol_wkbench_plugin_proto_rawDescData
 }
 
-var file_benchkit_protocol_wkbench_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_benchkit_protocol_wkbench_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_benchkit_protocol_wkbench_plugin_proto_goTypes = []any{
 	(*Frame)(nil),             // 0: wkbench.plugin.v1.Frame
 	(*HandshakeRequest)(nil),  // 1: wkbench.plugin.v1.HandshakeRequest
@@ -1976,10 +2328,15 @@ var file_benchkit_protocol_wkbench_plugin_proto_goTypes = []any{
 	(*MetricFlush)(nil),       // 19: wkbench.plugin.v1.MetricFlush
 	(*MetricSnapshot)(nil),    // 20: wkbench.plugin.v1.MetricSnapshot
 	(*SetOutput)(nil),         // 21: wkbench.plugin.v1.SetOutput
-	(*TerminalStatus)(nil),    // 22: wkbench.plugin.v1.TerminalStatus
-	(*Error)(nil),             // 23: wkbench.plugin.v1.Error
-	nil,                       // 24: wkbench.plugin.v1.RunRequest.InputsEntry
-	nil,                       // 25: wkbench.plugin.v1.MetricSnapshot.LabelsEntry
+	(*ArtifactOpen)(nil),      // 22: wkbench.plugin.v1.ArtifactOpen
+	(*ArtifactOpened)(nil),    // 23: wkbench.plugin.v1.ArtifactOpened
+	(*ArtifactChunk)(nil),     // 24: wkbench.plugin.v1.ArtifactChunk
+	(*ArtifactClose)(nil),     // 25: wkbench.plugin.v1.ArtifactClose
+	(*ArtifactClosed)(nil),    // 26: wkbench.plugin.v1.ArtifactClosed
+	(*TerminalStatus)(nil),    // 27: wkbench.plugin.v1.TerminalStatus
+	(*Error)(nil),             // 28: wkbench.plugin.v1.Error
+	nil,                       // 29: wkbench.plugin.v1.RunRequest.InputsEntry
+	nil,                       // 30: wkbench.plugin.v1.MetricSnapshot.LabelsEntry
 }
 var file_benchkit_protocol_wkbench_plugin_proto_depIdxs = []int32{
 	1,  // 0: wkbench.plugin.v1.Frame.handshake_request:type_name -> wkbench.plugin.v1.HandshakeRequest
@@ -1995,29 +2352,34 @@ var file_benchkit_protocol_wkbench_plugin_proto_depIdxs = []int32{
 	17, // 10: wkbench.plugin.v1.Frame.run_env_response:type_name -> wkbench.plugin.v1.RunEnvResponse
 	19, // 11: wkbench.plugin.v1.Frame.metric_flush:type_name -> wkbench.plugin.v1.MetricFlush
 	21, // 12: wkbench.plugin.v1.Frame.set_output:type_name -> wkbench.plugin.v1.SetOutput
-	22, // 13: wkbench.plugin.v1.Frame.terminal_status:type_name -> wkbench.plugin.v1.TerminalStatus
-	23, // 14: wkbench.plugin.v1.Frame.error:type_name -> wkbench.plugin.v1.Error
-	3,  // 15: wkbench.plugin.v1.HandshakeResponse.manifest:type_name -> wkbench.plugin.v1.PluginManifest
-	6,  // 16: wkbench.plugin.v1.PluginManifest.units:type_name -> wkbench.plugin.v1.UnitDefinition
-	6,  // 17: wkbench.plugin.v1.ListUnitsResponse.units:type_name -> wkbench.plugin.v1.UnitDefinition
-	7,  // 18: wkbench.plugin.v1.UnitDefinition.inputs:type_name -> wkbench.plugin.v1.PortDef
-	7,  // 19: wkbench.plugin.v1.UnitDefinition.outputs:type_name -> wkbench.plugin.v1.PortDef
-	9,  // 20: wkbench.plugin.v1.UnitDefinition.metrics:type_name -> wkbench.plugin.v1.MetricDef
-	10, // 21: wkbench.plugin.v1.UnitDefinition.artifacts:type_name -> wkbench.plugin.v1.ArtifactDef
-	8,  // 22: wkbench.plugin.v1.PortDef.meta:type_name -> wkbench.plugin.v1.PortMeta
-	24, // 23: wkbench.plugin.v1.RunRequest.inputs:type_name -> wkbench.plugin.v1.RunRequest.InputsEntry
-	18, // 24: wkbench.plugin.v1.RunEnvRequest.value:type_name -> wkbench.plugin.v1.PortValue
-	18, // 25: wkbench.plugin.v1.RunEnvResponse.value:type_name -> wkbench.plugin.v1.PortValue
-	20, // 26: wkbench.plugin.v1.MetricFlush.metrics:type_name -> wkbench.plugin.v1.MetricSnapshot
-	25, // 27: wkbench.plugin.v1.MetricSnapshot.labels:type_name -> wkbench.plugin.v1.MetricSnapshot.LabelsEntry
-	18, // 28: wkbench.plugin.v1.SetOutput.value:type_name -> wkbench.plugin.v1.PortValue
-	23, // 29: wkbench.plugin.v1.TerminalStatus.error:type_name -> wkbench.plugin.v1.Error
-	18, // 30: wkbench.plugin.v1.RunRequest.InputsEntry.value:type_name -> wkbench.plugin.v1.PortValue
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	27, // 13: wkbench.plugin.v1.Frame.terminal_status:type_name -> wkbench.plugin.v1.TerminalStatus
+	28, // 14: wkbench.plugin.v1.Frame.error:type_name -> wkbench.plugin.v1.Error
+	22, // 15: wkbench.plugin.v1.Frame.artifact_open:type_name -> wkbench.plugin.v1.ArtifactOpen
+	23, // 16: wkbench.plugin.v1.Frame.artifact_opened:type_name -> wkbench.plugin.v1.ArtifactOpened
+	24, // 17: wkbench.plugin.v1.Frame.artifact_chunk:type_name -> wkbench.plugin.v1.ArtifactChunk
+	25, // 18: wkbench.plugin.v1.Frame.artifact_close:type_name -> wkbench.plugin.v1.ArtifactClose
+	26, // 19: wkbench.plugin.v1.Frame.artifact_closed:type_name -> wkbench.plugin.v1.ArtifactClosed
+	3,  // 20: wkbench.plugin.v1.HandshakeResponse.manifest:type_name -> wkbench.plugin.v1.PluginManifest
+	6,  // 21: wkbench.plugin.v1.PluginManifest.units:type_name -> wkbench.plugin.v1.UnitDefinition
+	6,  // 22: wkbench.plugin.v1.ListUnitsResponse.units:type_name -> wkbench.plugin.v1.UnitDefinition
+	7,  // 23: wkbench.plugin.v1.UnitDefinition.inputs:type_name -> wkbench.plugin.v1.PortDef
+	7,  // 24: wkbench.plugin.v1.UnitDefinition.outputs:type_name -> wkbench.plugin.v1.PortDef
+	9,  // 25: wkbench.plugin.v1.UnitDefinition.metrics:type_name -> wkbench.plugin.v1.MetricDef
+	10, // 26: wkbench.plugin.v1.UnitDefinition.artifacts:type_name -> wkbench.plugin.v1.ArtifactDef
+	8,  // 27: wkbench.plugin.v1.PortDef.meta:type_name -> wkbench.plugin.v1.PortMeta
+	29, // 28: wkbench.plugin.v1.RunRequest.inputs:type_name -> wkbench.plugin.v1.RunRequest.InputsEntry
+	18, // 29: wkbench.plugin.v1.RunEnvRequest.value:type_name -> wkbench.plugin.v1.PortValue
+	18, // 30: wkbench.plugin.v1.RunEnvResponse.value:type_name -> wkbench.plugin.v1.PortValue
+	20, // 31: wkbench.plugin.v1.MetricFlush.metrics:type_name -> wkbench.plugin.v1.MetricSnapshot
+	30, // 32: wkbench.plugin.v1.MetricSnapshot.labels:type_name -> wkbench.plugin.v1.MetricSnapshot.LabelsEntry
+	18, // 33: wkbench.plugin.v1.SetOutput.value:type_name -> wkbench.plugin.v1.PortValue
+	28, // 34: wkbench.plugin.v1.TerminalStatus.error:type_name -> wkbench.plugin.v1.Error
+	18, // 35: wkbench.plugin.v1.RunRequest.InputsEntry.value:type_name -> wkbench.plugin.v1.PortValue
+	36, // [36:36] is the sub-list for method output_type
+	36, // [36:36] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_benchkit_protocol_wkbench_plugin_proto_init() }
@@ -2041,6 +2403,11 @@ func file_benchkit_protocol_wkbench_plugin_proto_init() {
 		(*Frame_SetOutput)(nil),
 		(*Frame_TerminalStatus)(nil),
 		(*Frame_Error)(nil),
+		(*Frame_ArtifactOpen)(nil),
+		(*Frame_ArtifactOpened)(nil),
+		(*Frame_ArtifactChunk)(nil),
+		(*Frame_ArtifactClose)(nil),
+		(*Frame_ArtifactClosed)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2048,7 +2415,7 @@ func file_benchkit_protocol_wkbench_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_benchkit_protocol_wkbench_plugin_proto_rawDesc), len(file_benchkit_protocol_wkbench_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   26,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

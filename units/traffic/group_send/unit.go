@@ -119,7 +119,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
-	channels, err := contract.Input[channelport.GroupSet](env, "channels")
+	channels, err := contract.Input[channelport.GroupSetData](env, "channels")
 	if err != nil {
 		return err
 	}

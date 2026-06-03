@@ -32,7 +32,7 @@ func TestPrepareTokensPostsIdentityTokensAndOutputsTokenSource(t *testing.T) {
 	}))
 	defer server.Close()
 
-	identities := identityPool{items: []identityport.Identity{
+	identities := identityport.PoolData{Items: []identityport.Identity{
 		{UID: "u1", DeviceID: "d1", Token: "t1"},
 		{UID: "u2", DeviceID: "d2", Token: "t2"},
 	}}
@@ -55,11 +55,3 @@ func TestPrepareTokensPostsIdentityTokensAndOutputsTokenSource(t *testing.T) {
 		t.Fatalf("unexpected token source result token=%q ok=%v", token, ok)
 	}
 }
-
-type identityPool struct {
-	items []identityport.Identity
-}
-
-func (p identityPool) Count() int { return len(p.items) }
-
-func (p identityPool) At(index int) identityport.Identity { return p.items[index] }

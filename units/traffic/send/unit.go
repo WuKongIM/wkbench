@@ -132,7 +132,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
-	targets, err := contract.Input[channelport.SendTargetSet](env, "targets")
+	targets, err := contract.Input[channelport.SendTargetSetData](env, "targets")
 	if err != nil {
 		return err
 	}

@@ -207,11 +207,13 @@ units:
 
 func TestRunExternalPluginScenarioWithQualifiedKind(t *testing.T) {
 	bin := buildDemoPlugin(t)
+	reportDir := filepath.Join(t.TempDir(), "report")
 	scenarioPath := writeScenarioFile(t, `
 version: wkbench/v2
 run:
   id: plugin-qualified
   duration: 1s
+  report_dir: `+reportDir+`
 units:
   echo:
     use: wkbench.demo:demo.echo/v1
@@ -226,6 +228,9 @@ units:
 	}
 	if !strings.Contains(stderr.String(), "wkbench run completed") {
 		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(reportDir, "artifacts", "echo", "echo.json")); err != nil {
+		t.Fatalf("artifact not written: %v", err)
 	}
 }
 
@@ -261,6 +266,48 @@ units:
 	}
 	if !strings.Contains(string(data), "hello from plugin report") {
 		t.Fatalf("report.json missing remote output value:\n%s", data)
+	}
+}
+
+func TestRunOfficialDataPluginOutputIntoLocalGroupSend(t *testing.T) {
+	bin := buildOfficialDataPlugin(t)
+	dir := t.TempDir()
+	reportDir := filepath.Join(dir, "report")
+	scenarioPath := filepath.Join(dir, "mixed.yaml")
+	scenario := `
+version: wkbench/v2
+run:
+  id: official-data-to-local
+  duration: 1s
+  report_dir: ` + reportDir + `
+units:
+  groups:
+    use: wkbench.official.data:core.static_groups/v1
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    inputs:
+      channels: groups.groups
+      sender: sender.sender
+    spec:
+      rate: 2/s
+      payload_size: 16
+`
+	if err := os.WriteFile(scenarioPath, []byte(scenario), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "run", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench run completed") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
 	}
 }
 
@@ -331,6 +378,18 @@ func buildDemoPlugin(t *testing.T) string {
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build demo plugin: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func buildOfficialDataPlugin(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "wkbench-official-data-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, "./plugins/official/dataplane/cmd/wkbench-official-data-plugin")
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build official data plugin: %v\n%s", err, out)
 	}
 	return bin
 }

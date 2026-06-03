@@ -40,7 +40,7 @@ func (Unit) Definition() contract.Definition {
 		Title:       "Identity pool",
 		Description: "Produces deterministic benchmark user and device identities.",
 		Outputs: []contract.PortDef{
-			{Name: "pool", Type: identityport.PoolV1},
+			{Name: "pool", Type: identityport.PoolV1, Meta: inlineJSONDataMeta()},
 		},
 	}
 }
@@ -82,6 +82,15 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	return env.SetOutput("pool", Pool{Items: items})
 }
 
+func inlineJSONDataMeta() contract.PortMeta {
+	return contract.PortMeta{
+		Boundary:        contract.PortBoundaryData,
+		Transport:       contract.PortTransportInline,
+		Encodings:       []string{"json"},
+		MaxPayloadBytes: contract.DefaultInlinePortMaxPayloadBytes,
+	}
+}
+
 func decodeSpec(env contract.ValidateEnv) (Spec, error) {
 	spec := Spec{UIDPrefix: "user", DevicePrefix: "device"}
 	if err := env.DecodeSpec(&spec); err != nil {
@@ -100,23 +109,4 @@ func decodeSpec(env contract.ValidateEnv) (Spec, error) {
 }
 
 // Pool is a JSON-friendly identity pool.
-type Pool struct {
-	// Items contains deterministic identities.
-	Items []identityport.Identity `json:"items"`
-}
-
-// Count implements identity.Pool.
-func (p Pool) Count() int { return len(p.Items) }
-
-// At implements identity.Pool.
-func (p Pool) At(index int) identityport.Identity { return p.Items[index] }
-
-// TokenFor implements identity.TokenSource.
-func (p Pool) TokenFor(uid string) (string, bool) {
-	for _, item := range p.Items {
-		if item.UID == uid {
-			return item.Token, item.Token != ""
-		}
-	}
-	return "", false
-}
+type Pool = identityport.PoolData

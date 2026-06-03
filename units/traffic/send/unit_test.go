@@ -28,7 +28,7 @@ func TestSendUsesTargetsAndEmitsSummaryAndLatency(t *testing.T) {
 	}}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1", "u2"}},
 			{ChannelID: "p1", ChannelType: 1, SenderUIDs: []string{"u2"}},
 		}},
@@ -102,7 +102,7 @@ func TestSendRoundRobinRotatesSendersWithinEachTarget(t *testing.T) {
 	}}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1", "u2"}},
 			{ChannelID: "g2", ChannelType: 2, SenderUIDs: []string{"u3", "u4"}},
 		}},
@@ -147,7 +147,7 @@ func TestSendRecordsErrorsAndContinues(t *testing.T) {
 	client := &recordingClient{errOnCall: 2}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1"}},
 		}},
 		"sender": &messageSender{clients: map[string]wkprotoport.MessageClient{"u1": client}},
@@ -184,7 +184,7 @@ func TestSendReturnsContextErrorFromInFlightSend(t *testing.T) {
 	client := &cancelingClient{cancel: cancel}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1"}},
 		}},
 		"sender": &messageSender{clients: map[string]wkprotoport.MessageClient{"u1": client}},
@@ -210,7 +210,7 @@ func TestSendTreatsAckDeadlineAsDataPlaneError(t *testing.T) {
 	client := &deadlineClient{}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1"}},
 		}},
 		"sender": &messageSender{clients: map[string]wkprotoport.MessageClient{"u1": client}},
@@ -316,7 +316,7 @@ func TestSendHonorsMaxInFlight(t *testing.T) {
 	client := &recordingClient{delay: 2 * time.Millisecond}
 	unit := sendunit.Unit{}
 	env := contract.NewTestRunEnv("run-1", "traffic", map[string]any{
-		"targets": targetSet{items: []channelport.SendTarget{
+		"targets": channelport.SendTargetSetData{Items: []channelport.SendTarget{
 			{ChannelID: "g1", ChannelType: 2, SenderUIDs: []string{"u1"}},
 		}},
 		"sender": &messageSender{clients: map[string]wkprotoport.MessageClient{"u1": client}},
@@ -337,18 +337,6 @@ func TestSendHonorsMaxInFlight(t *testing.T) {
 	if got := client.MaxActive(); got > 2 {
 		t.Fatalf("max active sends = %d, want <= 2", got)
 	}
-}
-
-type targetSet struct {
-	items []channelport.SendTarget
-}
-
-func (s targetSet) Count() int {
-	return len(s.items)
-}
-
-func (s targetSet) At(index int) channelport.SendTarget {
-	return s.items[index]
 }
 
 type messageSender struct {

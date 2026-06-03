@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
@@ -88,7 +89,7 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 				return err
 			}
 		case *protocol.Frame_RunRequest:
-			if err := srv.handleRun(ctx, frame, frame.GetRunRequest(), writer); err != nil {
+			if err := srv.handleRun(ctx, frame, frame.GetRunRequest(), reader, writer); err != nil {
 				return err
 			}
 		default:
@@ -146,7 +147,7 @@ func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *pro
 	})
 }
 
-func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *protocol.RunRequest, writer *protocol.FrameWriter) error {
+func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *protocol.RunRequest, reader *protocol.FrameReader, writer *protocol.FrameWriter) error {
 	unit, err := s.unit(req.GetKind())
 	if err != nil {
 		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
@@ -165,7 +166,7 @@ func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *prot
 		}
 		inputs[name] = decoded
 	}
-	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), inputs, spec)
+	env := newRemoteRunEnv(frame.GetRequestId(), req, inputs, spec, unit.Definition().Artifacts, reader, writer)
 	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
 	if req.GetWorkerCount() > 0 {
 		env.SetWorkerCount(int(req.GetWorkerCount()))
@@ -220,7 +221,11 @@ func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *prot
 	})
 }
 
-func (s *server) writeMetricFlush(requestID string, env *contract.TestRunEnv, writer *protocol.FrameWriter) error {
+type metricSnapshotReader interface {
+	MetricSnapshots() []contract.MetricSnapshot
+}
+
+func (s *server) writeMetricFlush(requestID string, env metricSnapshotReader, writer *protocol.FrameWriter) error {
 	snapshots := env.MetricSnapshots()
 	if len(snapshots) == 0 {
 		return nil
@@ -241,6 +246,175 @@ func (s *server) writeMetricFlush(requestID string, env *contract.TestRunEnv, wr
 		RequestId: requestID,
 		Body:      &protocol.Frame_MetricFlush{MetricFlush: &protocol.MetricFlush{Metrics: metrics}},
 	})
+}
+
+const artifactChunkMaxBytes = 64 << 10
+
+type remoteRunEnv struct {
+	*contract.TestRunEnv
+	requestID    string
+	runID        string
+	unitName     string
+	reader       *protocol.FrameReader
+	writer       *protocol.FrameWriter
+	artifactDefs map[string]contract.ArtifactDef
+
+	ioMu sync.Mutex
+}
+
+func newRemoteRunEnv(requestID string, req *protocol.RunRequest, inputs map[string]any, spec map[string]any, artifacts []contract.ArtifactDef, reader *protocol.FrameReader, writer *protocol.FrameWriter) *remoteRunEnv {
+	artifactDefs := make(map[string]contract.ArtifactDef, len(artifacts))
+	for _, artifact := range artifacts {
+		artifactDefs[artifact.Name] = artifact
+	}
+	return &remoteRunEnv{
+		TestRunEnv:   contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), inputs, spec),
+		requestID:    requestID,
+		runID:        req.GetRunId(),
+		unitName:     req.GetUnitName(),
+		reader:       reader,
+		writer:       writer,
+		artifactDefs: artifactDefs,
+	}
+}
+
+func (e *remoteRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
+	if _, ok := e.artifactDefs[name]; !ok {
+		return nil, fmt.Errorf("artifact %q not declared", name)
+	}
+	if e.reader == nil {
+		return nil, fmt.Errorf("artifact %q cannot be opened without a plugin response reader", name)
+	}
+	e.ioMu.Lock()
+	defer e.ioMu.Unlock()
+	if err := e.writer.WriteFrame(&protocol.Frame{
+		RequestId:      e.requestID,
+		RunId:          e.runID,
+		UnitInstanceId: e.unitName,
+		Body:           &protocol.Frame_ArtifactOpen{ArtifactOpen: &protocol.ArtifactOpen{Name: name}},
+	}); err != nil {
+		return nil, fmt.Errorf("write artifact open %q: %w", name, err)
+	}
+	frame, err := e.reader.ReadFrame()
+	if err != nil {
+		return nil, fmt.Errorf("read artifact opened %q: %w", name, err)
+	}
+	if err := validateResponseFrameID(frame, e.requestID); err != nil {
+		return nil, err
+	}
+	if rpcErr := frame.GetError(); rpcErr != nil {
+		return nil, remoteProtocolError(rpcErr)
+	}
+	opened := frame.GetArtifactOpened()
+	if opened == nil {
+		return nil, fmt.Errorf("expected artifact opened response for %q", name)
+	}
+	if opened.GetHandle() == "" {
+		return nil, fmt.Errorf("artifact opened response for %q missing handle", name)
+	}
+	return &remoteArtifactWriter{env: e, name: name, handle: opened.GetHandle()}, nil
+}
+
+type remoteArtifactWriter struct {
+	env      *remoteRunEnv
+	name     string
+	handle   string
+	sequence int64
+	closed   bool
+}
+
+func (w *remoteArtifactWriter) Write(p []byte) (int, error) {
+	if w.closed {
+		return 0, fmt.Errorf("artifact %q is closed", w.name)
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	written := 0
+	for written < len(p) {
+		end := written + artifactChunkMaxBytes
+		if end > len(p) {
+			end = len(p)
+		}
+		w.sequence++
+		chunk := append([]byte(nil), p[written:end]...)
+		if err := w.env.writeArtifactChunk(w.handle, w.sequence, chunk); err != nil {
+			return written, err
+		}
+		written = end
+	}
+	return written, nil
+}
+
+func (w *remoteArtifactWriter) Close() error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	return w.env.closeArtifact(w.handle, w.name)
+}
+
+func (e *remoteRunEnv) writeArtifactChunk(handle string, sequence int64, data []byte) error {
+	e.ioMu.Lock()
+	defer e.ioMu.Unlock()
+	if err := e.writer.WriteFrame(&protocol.Frame{
+		RequestId:      e.requestID,
+		RunId:          e.runID,
+		UnitInstanceId: e.unitName,
+		Body: &protocol.Frame_ArtifactChunk{ArtifactChunk: &protocol.ArtifactChunk{
+			Handle:   handle,
+			Sequence: sequence,
+			Data:     data,
+		}},
+	}); err != nil {
+		return fmt.Errorf("write artifact chunk: %w", err)
+	}
+	return nil
+}
+
+func (e *remoteRunEnv) closeArtifact(handle, name string) error {
+	e.ioMu.Lock()
+	defer e.ioMu.Unlock()
+	if err := e.writer.WriteFrame(&protocol.Frame{
+		RequestId:      e.requestID,
+		RunId:          e.runID,
+		UnitInstanceId: e.unitName,
+		Body:           &protocol.Frame_ArtifactClose{ArtifactClose: &protocol.ArtifactClose{Handle: handle}},
+	}); err != nil {
+		return fmt.Errorf("write artifact close %q: %w", name, err)
+	}
+	frame, err := e.reader.ReadFrame()
+	if err != nil {
+		return fmt.Errorf("read artifact closed %q: %w", name, err)
+	}
+	if err := validateResponseFrameID(frame, e.requestID); err != nil {
+		return err
+	}
+	if rpcErr := frame.GetError(); rpcErr != nil {
+		return remoteProtocolError(rpcErr)
+	}
+	closed := frame.GetArtifactClosed()
+	if closed == nil {
+		return fmt.Errorf("expected artifact closed response for %q", name)
+	}
+	if closed.GetHandle() != handle {
+		return fmt.Errorf("artifact closed handle = %q, want %q", closed.GetHandle(), handle)
+	}
+	return nil
+}
+
+func validateResponseFrameID(frame *protocol.Frame, requestID string) error {
+	if frame.GetRequestId() != requestID {
+		return fmt.Errorf("response request id = %q, want %q", frame.GetRequestId(), requestID)
+	}
+	return nil
+}
+
+func remoteProtocolError(err *protocol.Error) error {
+	if err == nil {
+		return fmt.Errorf("plugin protocol error")
+	}
+	return fmt.Errorf("plugin error %s: %s", err.GetCode(), err.GetMessage())
 }
 
 func decodeSpecMap(data []byte) (map[string]any, error) {

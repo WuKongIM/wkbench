@@ -21,7 +21,7 @@ func TestSessionPoolConnectsIdentitiesAndOutputsGroupSender(t *testing.T) {
 	}
 	env := contract.NewTestRunEnv("run-1", "sessions", map[string]any{
 		"target": targetport.Target{GatewayTCPAddrs: []string{"gw-a", "gw-b"}},
-		"identities": identityPool{items: []identityport.Identity{
+		"identities": identityport.PoolData{Items: []identityport.Identity{
 			{UID: "u1", DeviceID: "d1"},
 			{UID: "u2", DeviceID: "d2"},
 		}},
@@ -69,14 +69,6 @@ type connectCall struct {
 	token   string
 	gateway string
 }
-
-type identityPool struct {
-	items []identityport.Identity
-}
-
-func (p identityPool) Count() int { return len(p.items) }
-
-func (p identityPool) At(index int) identityport.Identity { return p.items[index] }
 
 type tokenSource struct {
 	tokens map[string]string

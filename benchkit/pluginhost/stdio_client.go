@@ -244,6 +244,9 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		return fmt.Errorf("write run request: %w", err)
 	}
 
+	artifacts := newRunArtifactState(env)
+	defer artifacts.closeAll()
+
 	for {
 		frame, err := c.readFrame(ctx, "run")
 		if err != nil {
@@ -259,6 +262,36 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 			}
 		case *protocol.Frame_MetricFlush:
 			applyMetricFlush(env, body.MetricFlush)
+		case *protocol.Frame_ArtifactOpen:
+			opened, err := artifacts.open(body.ArtifactOpen)
+			if err != nil {
+				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+			}
+			if err := c.writer.WriteFrame(&protocol.Frame{
+				RequestId:      requestID,
+				RunId:          req.RunID,
+				UnitInstanceId: req.UnitName,
+				Body:           &protocol.Frame_ArtifactOpened{ArtifactOpened: opened},
+			}); err != nil {
+				return fmt.Errorf("write artifact opened response: %w", err)
+			}
+		case *protocol.Frame_ArtifactChunk:
+			if err := artifacts.write(body.ArtifactChunk); err != nil {
+				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+			}
+		case *protocol.Frame_ArtifactClose:
+			closed, err := artifacts.close(body.ArtifactClose)
+			if err != nil {
+				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+			}
+			if err := c.writer.WriteFrame(&protocol.Frame{
+				RequestId:      requestID,
+				RunId:          req.RunID,
+				UnitInstanceId: req.UnitName,
+				Body:           &protocol.Frame_ArtifactClosed{ArtifactClosed: closed},
+			}); err != nil {
+				return fmt.Errorf("write artifact closed response: %w", err)
+			}
 		case *protocol.Frame_TerminalStatus:
 			if body.TerminalStatus.GetOk() {
 				return nil
@@ -275,9 +308,99 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 	}
 }
 
+func writeRunArtifactError(writer *protocol.FrameWriter, requestID, runID, unitName string, err error) error {
+	if writeErr := writer.WriteFrame(&protocol.Frame{
+		RequestId:      requestID,
+		RunId:          runID,
+		UnitInstanceId: unitName,
+		Body: &protocol.Frame_Error{Error: &protocol.Error{
+			Code:    "ARTIFACT_ERROR",
+			Message: err.Error(),
+		}},
+	}); writeErr != nil {
+		return errors.Join(err, fmt.Errorf("write artifact error response: %w", writeErr))
+	}
+	return err
+}
+
 func (c *StdioClient) nextRequestID(prefix string) string {
 	c.nextSeq++
 	return fmt.Sprintf("%s-%d", prefix, c.nextSeq)
+}
+
+type runArtifactState struct {
+	env     contract.RunEnv
+	next    int64
+	writers map[string]*hostArtifactWriter
+}
+
+type hostArtifactWriter struct {
+	name   string
+	writer io.WriteCloser
+	size   int64
+}
+
+func newRunArtifactState(env contract.RunEnv) *runArtifactState {
+	return &runArtifactState{
+		env:     env,
+		writers: make(map[string]*hostArtifactWriter),
+	}
+}
+
+func (s *runArtifactState) open(open *protocol.ArtifactOpen) (*protocol.ArtifactOpened, error) {
+	if open == nil {
+		return nil, fmt.Errorf("artifact open frame missing body")
+	}
+	writer, err := s.env.OpenArtifact(open.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("open artifact %q: %w", open.GetName(), err)
+	}
+	s.next++
+	handle := fmt.Sprintf("artifact-%d", s.next)
+	s.writers[handle] = &hostArtifactWriter{name: open.GetName(), writer: writer}
+	return &protocol.ArtifactOpened{Name: open.GetName(), Handle: handle}, nil
+}
+
+func (s *runArtifactState) write(chunk *protocol.ArtifactChunk) error {
+	if chunk == nil {
+		return fmt.Errorf("artifact chunk frame missing body")
+	}
+	writer, ok := s.writers[chunk.GetHandle()]
+	if !ok {
+		return fmt.Errorf("unknown artifact handle %q", chunk.GetHandle())
+	}
+	n, err := writer.writer.Write(chunk.GetData())
+	writer.size += int64(n)
+	if err != nil {
+		return fmt.Errorf("write artifact %q: %w", writer.name, err)
+	}
+	if n != len(chunk.GetData()) {
+		return fmt.Errorf("write artifact %q: short write %d of %d", writer.name, n, len(chunk.GetData()))
+	}
+	return nil
+}
+
+func (s *runArtifactState) close(closeFrame *protocol.ArtifactClose) (*protocol.ArtifactClosed, error) {
+	if closeFrame == nil {
+		return nil, fmt.Errorf("artifact close frame missing body")
+	}
+	handle := closeFrame.GetHandle()
+	writer, ok := s.writers[handle]
+	if !ok {
+		return nil, fmt.Errorf("unknown artifact handle %q", handle)
+	}
+	delete(s.writers, handle)
+	if err := writer.writer.Close(); err != nil {
+		return nil, fmt.Errorf("close artifact %q: %w", writer.name, err)
+	}
+	return &protocol.ArtifactClosed{Handle: handle, SizeBytes: writer.size}, nil
+}
+
+func (s *runArtifactState) closeAll() {
+	for handle, writer := range s.writers {
+		_ = writer.writer.Close()
+		delete(s.writers, handle)
+	}
 }
 
 func (c *StdioClient) writeRequestAndReadFrame(ctx context.Context, frame *protocol.Frame, op string) (*protocol.Frame, error) {

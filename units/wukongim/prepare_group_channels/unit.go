@@ -93,7 +93,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
-	pool, err := contract.Input[identityport.Pool](env, "identities")
+	pool, err := contract.Input[identityport.PoolData](env, "identities")
 	if err != nil {
 		return err
 	}

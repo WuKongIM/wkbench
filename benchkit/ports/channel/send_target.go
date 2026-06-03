@@ -14,6 +14,17 @@ type SendTargetSet interface {
 	At(index int) SendTarget
 }
 
+// SendTargetSetData is the JSON-friendly data representation of send targets.
+type SendTargetSetData struct {
+	Items []SendTarget `json:"items"`
+}
+
+// Count implements SendTargetSet.
+func (s SendTargetSetData) Count() int { return len(s.Items) }
+
+// At implements SendTargetSet.
+func (s SendTargetSetData) At(index int) SendTarget { return s.Items[index] }
+
 // SendTarget describes one protocol send destination and its usable senders.
 type SendTarget struct {
 	// ChannelID is the client-visible protocol channel id.

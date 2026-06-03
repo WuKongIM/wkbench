@@ -43,10 +43,10 @@ func (Unit) Definition() contract.Definition {
 		Title:       "Person send pairs",
 		Description: "Produces deterministic person-channel send targets from an identity pool.",
 		Inputs: []contract.PortDef{
-			{Name: "identities", Type: identityport.PoolV1},
+			{Name: "identities", Type: identityport.PoolV1, Meta: inlineJSONDataMeta()},
 		},
 		Outputs: []contract.PortDef{
-			{Name: "targets", Type: channelport.SendTargetSetV1},
+			{Name: "targets", Type: channelport.SendTargetSetV1, Meta: inlineJSONDataMeta()},
 		},
 	}
 }
@@ -77,7 +77,7 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
-	pool, err := contract.Input[identityport.Pool](env, "identities")
+	pool, err := contract.Input[identityport.PoolData](env, "identities")
 	if err != nil {
 		return err
 	}
@@ -98,6 +98,15 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 		}
 	}
 	return env.SetOutput("targets", TargetSet{Items: items})
+}
+
+func inlineJSONDataMeta() contract.PortMeta {
+	return contract.PortMeta{
+		Boundary:        contract.PortBoundaryData,
+		Transport:       contract.PortTransportInline,
+		Encodings:       []string{"json"},
+		MaxPayloadBytes: contract.DefaultInlinePortMaxPayloadBytes,
+	}
 }
 
 func decodeSpec(env contract.ValidateEnv) (Spec, error) {
@@ -121,13 +130,4 @@ func personTarget(senderUID, recipientUID string) channelport.SendTarget {
 }
 
 // TargetSet is a JSON-friendly send target set.
-type TargetSet struct {
-	// Items contains deterministic person-channel send targets.
-	Items []channelport.SendTarget `json:"items"`
-}
-
-// Count implements channel.SendTargetSet.
-func (s TargetSet) Count() int { return len(s.Items) }
-
-// At implements channel.SendTargetSet.
-func (s TargetSet) At(index int) channelport.SendTarget { return s.Items[index] }
+type TargetSet = channelport.SendTargetSetData

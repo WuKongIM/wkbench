@@ -5,8 +5,8 @@ the `wkbench.plugin/v1` frame protocol over stdin and stdout. The host starts
 the executable passed with `-plugin`, performs a handshake, lists units, and
 then calls `Validate`, `Plan`, and `Run` over the same stdio frame stream.
 
-Phase 1 Go plugins use the same `contract.Unit` interface as in-process units
-through `sdk/go/wkbench/plugin`.
+Go plugins use the same `contract.Unit` interface as in-process units through
+`sdk/go/wkbench/plugin`.
 
 ## Entrypoint
 
@@ -93,6 +93,13 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin validate -scena
 GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin run -scenario ./examples/plugin-echo.yaml
 ```
 
+Build and load the official pure-data plugin:
+
+```bash
+GOWORK=off go build -o /tmp/wkbench-official-data-plugin ./plugins/official/dataplane/cmd/wkbench-official-data-plugin
+GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-official-data-plugin validate -scenario ./examples/official-data-plugin.yaml
+```
+
 `-plugin` is a global CLI flag and may be repeated before the subcommand.
 
 ## Scenario YAML
@@ -134,6 +141,16 @@ Plugin units receive the same lifecycle calls as local units:
 Inputs and outputs are JSON inline values in Phase 1. Keep large raw samples out
 of inline outputs; write compact summaries instead.
 
+## Artifacts
+
+Remote plugin `Run` supports host-managed artifact writes through
+`env.OpenArtifact`. Artifacts must be declared in `Definition.Artifacts`; the
+host writes them under `run.report_dir/artifacts/<unit>/<artifact-name>` and
+records metadata in `report.json`.
+
+Use artifacts for raw samples or larger diagnostic files. Keep report outputs
+compact and JSON-friendly.
+
 ## Metrics
 
 Remote plugin metrics are supported through aggregate metric flushes. Duration
@@ -151,8 +168,6 @@ remote metrics.
   artifact-ref, stream, and local-resource inputs or producer outputs are not
   transported in Phase 1.
 - Outputs crossing the process boundary are JSON inline values.
-- Remote plugin artifact streaming is not supported. Plugins should not rely on
-  `OpenArtifact` until artifact streaming lands.
-- Large samples belong in artifacts in the future, not inline outputs.
+- Large samples belong in artifacts, not inline outputs.
 - Official units still exist in-process during migration. The final
   architecture will remove direct host registration later.

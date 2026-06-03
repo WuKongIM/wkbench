@@ -87,7 +87,7 @@ func (u Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if len(tgt.GatewayTCPAddrs) == 0 {
 		return fmt.Errorf("session_pool: target has no gateway_tcp_addrs")
 	}
-	identities, err := contract.Input[identityport.Pool](env, "identities")
+	identities, err := contract.Input[identityport.PoolData](env, "identities")
 	if err != nil {
 		return err
 	}

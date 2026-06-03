@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -375,6 +376,7 @@ type TestRunEnv struct {
 	metrics      map[string]MetricSnapshot
 	artifactDefs map[string]ArtifactDef
 	artifacts    map[string]ArtifactInfo
+	reportDir    string
 	runDuration  time.Duration
 	workerCount  int
 
@@ -418,6 +420,13 @@ func (e *TestRunEnv) SetWorkerCount(count int) {
 		count = 1
 	}
 	e.workerCount = count
+}
+
+// SetReportDir sets the directory used by OpenArtifact in tests.
+func (e *TestRunEnv) SetReportDir(dir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.reportDir = dir
 }
 
 // WorkerCount implements PlanEnv.
@@ -605,6 +614,7 @@ func (e *TestRunEnv) Artifacts() map[string]ArtifactInfo {
 func (e *TestRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	e.mu.Lock()
 	def, ok := e.artifactDefs[name]
+	reportDir := strings.TrimSpace(e.reportDir)
 	e.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("artifact %q not declared", name)
@@ -612,7 +622,17 @@ func (e *TestRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	if err := validateArtifactName(name); err != nil {
 		return nil, err
 	}
-	file, err := os.CreateTemp("", "wkbench-artifact-*")
+	var file *os.File
+	var err error
+	if reportDir == "" {
+		file, err = os.CreateTemp("", "wkbench-artifact-*")
+	} else {
+		artifactDir := filepath.Join(reportDir, "artifacts", e.unitName)
+		if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create artifact directory for %q: %w", name, err)
+		}
+		file, err = os.Create(filepath.Join(artifactDir, name))
+	}
 	if err != nil {
 		return nil, err
 	}

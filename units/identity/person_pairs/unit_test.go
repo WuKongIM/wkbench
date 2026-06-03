@@ -17,7 +17,7 @@ func TestUnitContract(t *testing.T) {
 
 func TestPersonPairsGenerateRingTargets(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "pairs", map[string]any{
-		"identities": identityPool{items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}, {UID: "u3"}}},
+		"identities": identityport.PoolData{Items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}, {UID: "u3"}}},
 	}, map[string]any{
 		"count": 2,
 		"mode":  "ring",
@@ -48,7 +48,7 @@ func TestPersonPairsGenerateRingTargets(t *testing.T) {
 
 func TestPersonPairsGenerateRingTargetsWraparound(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "pairs", map[string]any{
-		"identities": identityPool{items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}, {UID: "u3"}}},
+		"identities": identityport.PoolData{Items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}, {UID: "u3"}}},
 	}, map[string]any{
 		"count": 5,
 		"mode":  "ring",
@@ -84,7 +84,7 @@ func TestPersonPairsGenerateRingTargetsWraparound(t *testing.T) {
 
 func TestPersonPairsBidirectionalExpandsEachPair(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "pairs", map[string]any{
-		"identities": identityPool{items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}}},
+		"identities": identityport.PoolData{Items: []identityport.Identity{{UID: "u1"}, {UID: "u2"}}},
 	}, map[string]any{
 		"count":         1,
 		"mode":          "ring",
@@ -125,17 +125,10 @@ func TestPersonPairsValidateRejectsInvalidSpec(t *testing.T) {
 
 func TestPersonPairsRunRejectsTooFewIdentities(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "pairs", map[string]any{
-		"identities": identityPool{items: []identityport.Identity{{UID: "u1"}}},
+		"identities": identityport.PoolData{Items: []identityport.Identity{{UID: "u1"}}},
 	}, map[string]any{"count": 1, "mode": "ring"})
 
 	if err := (personpairs.Unit{}).Run(context.Background(), env); err == nil {
 		t.Fatal("expected run error")
 	}
 }
-
-type identityPool struct {
-	items []identityport.Identity
-}
-
-func (p identityPool) Count() int                         { return len(p.items) }
-func (p identityPool) At(index int) identityport.Identity { return p.items[index] }

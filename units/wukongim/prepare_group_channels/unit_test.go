@@ -46,7 +46,7 @@ func TestPrepareGroupChannelsPostsChannelsSubscribersAndOutputsGroupSet(t *testi
 
 	env := contract.NewTestRunEnv("run-1", "groups", map[string]any{
 		"target": targetport.Target{APIAddrs: []string{server.URL}},
-		"identities": identityPool{items: []identityport.Identity{
+		"identities": identityport.PoolData{Items: []identityport.Identity{
 			{UID: "u1"}, {UID: "u2"}, {UID: "u3"}, {UID: "u4"},
 		}},
 	}, map[string]any{
@@ -85,11 +85,3 @@ func TestPrepareGroupChannelsPostsChannelsSubscribersAndOutputsGroupSet(t *testi
 		t.Fatalf("unexpected first target: %#v", firstTarget)
 	}
 }
-
-type identityPool struct {
-	items []identityport.Identity
-}
-
-func (p identityPool) Count() int { return len(p.items) }
-
-func (p identityPool) At(index int) identityport.Identity { return p.items[index] }

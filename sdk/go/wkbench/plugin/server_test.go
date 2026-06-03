@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"testing"
 	"time"
@@ -154,7 +155,7 @@ func TestServerRunAppliesWorkerCount(t *testing.T) {
 		}},
 	}
 
-	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
 		t.Fatalf("handle run: %v", err)
 	}
 
@@ -192,7 +193,7 @@ func TestServerRunSeparatesRawAndReportPayload(t *testing.T) {
 		}},
 	}
 
-	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
 		t.Fatalf("handle run: %v", err)
 	}
 
@@ -236,7 +237,7 @@ func TestServerRunFallsBackToRawReportPayloadForPlainReportableOutput(t *testing
 		}},
 	}
 
-	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
 		t.Fatalf("handle run: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestServerRunSendsMetricFlush(t *testing.T) {
 		}},
 	}
 
-	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
 		t.Fatalf("handle run: %v", err)
 	}
 
@@ -291,6 +292,96 @@ func TestServerRunSendsMetricFlush(t *testing.T) {
 	}
 }
 
+func TestServerRunStreamsArtifacts(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{artifactRunUnit{}}})
+	toHostReader, toHostWriter := io.Pipe()
+	toPluginReader, toPluginWriter := io.Pipe()
+	serverErr := make(chan error, 1)
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "artifact",
+			Kind:              "demo.artifact/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       1,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	go func() {
+		err := srv.handleRun(
+			context.Background(),
+			frame,
+			frame.GetRunRequest(),
+			protocol.NewFrameReader(toPluginReader, 16<<20),
+			protocol.NewFrameWriter(toHostWriter),
+		)
+		_ = toHostWriter.Close()
+		serverErr <- err
+	}()
+
+	hostReader := protocol.NewFrameReader(toHostReader, 16<<20)
+	hostWriter := protocol.NewFrameWriter(toPluginWriter)
+	openFrame := readServerPipeFrame(t, hostReader)
+	open := openFrame.GetArtifactOpen()
+	if open == nil || open.GetName() != "metrics.jsonl" {
+		t.Fatalf("first frame = %#v, want artifact open", openFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_ArtifactOpened{ArtifactOpened: &protocol.ArtifactOpened{
+			Name:   "metrics.jsonl",
+			Handle: "artifact-1",
+		}},
+	}); err != nil {
+		t.Fatalf("write opened response: %v", err)
+	}
+
+	var chunks bytes.Buffer
+	chunk := readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	if chunk == nil || chunk.GetHandle() != "artifact-1" || chunk.GetSequence() != 1 {
+		t.Fatalf("first chunk = %#v", chunk)
+	}
+	chunks.Write(chunk.GetData())
+	chunk = readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	if chunk == nil || chunk.GetHandle() != "artifact-1" || chunk.GetSequence() != 2 {
+		t.Fatalf("second chunk = %#v", chunk)
+	}
+	chunks.Write(chunk.GetData())
+	if got := chunks.String(); got != "one\ntwo\n" {
+		t.Fatalf("artifact chunks = %q", got)
+	}
+
+	closeFrame := readServerPipeFrame(t, hostReader)
+	closeArtifact := closeFrame.GetArtifactClose()
+	if closeArtifact == nil || closeArtifact.GetHandle() != "artifact-1" {
+		t.Fatalf("close frame = %#v", closeFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_ArtifactClosed{ArtifactClosed: &protocol.ArtifactClosed{
+			Handle:    "artifact-1",
+			SizeBytes: int64(chunks.Len()),
+		}},
+	}); err != nil {
+		t.Fatalf("write closed response: %v", err)
+	}
+
+	outputFrame := readServerPipeFrame(t, hostReader)
+	if output := outputFrame.GetSetOutput(); output == nil || output.GetName() != "result" {
+		t.Fatalf("output frame = %#v", outputFrame)
+	}
+	terminalFrame := readServerPipeFrame(t, hostReader)
+	if status := terminalFrame.GetTerminalStatus(); status == nil || !status.GetOk() {
+		t.Fatalf("terminal status = %#v", status)
+	}
+	_ = toPluginWriter.Close()
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+}
+
 func TestServerRunTypedStructInputFromRPC(t *testing.T) {
 	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{typedInputUnit{}}})
 	var out bytes.Buffer
@@ -313,7 +404,7 @@ func TestServerRunTypedStructInputFromRPC(t *testing.T) {
 		}},
 	}
 
-	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
 		t.Fatalf("handle run: %v", err)
 	}
 
@@ -338,6 +429,15 @@ func TestServerRunTypedStructInputFromRPC(t *testing.T) {
 func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
 	t.Helper()
 	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	return frame
+}
+
+func readServerPipeFrame(t *testing.T, reader *protocol.FrameReader) *protocol.Frame {
+	t.Helper()
+	frame, err := reader.ReadFrame()
 	if err != nil {
 		t.Fatalf("read frame: %v", err)
 	}
@@ -478,6 +578,44 @@ func (metricFlushUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	env.ObserveDuration("latency", time.Millisecond, nil)
 	env.ObserveDuration("latency", 3*time.Millisecond, nil)
 	return nil
+}
+
+type artifactRunUnit struct{}
+
+func (artifactRunUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.artifact/v1",
+		Outputs: []contract.PortDef{{
+			Name: "result",
+			Type: "port.demo.result/v1",
+		}},
+		Artifacts: []contract.ArtifactDef{{
+			Name:        "metrics.jsonl",
+			ContentType: "application/jsonl",
+		}},
+	}
+}
+func (artifactRunUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (artifactRunUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (artifactRunUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	artifact, err := env.OpenArtifact("metrics.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := artifact.Write([]byte("one\n")); err != nil {
+		return err
+	}
+	if _, err := artifact.Write([]byte("two\n")); err != nil {
+		return err
+	}
+	if err := artifact.Close(); err != nil {
+		return err
+	}
+	return env.SetOutput("result", map[string]any{"ok": true})
 }
 
 type typedInputRequest struct {

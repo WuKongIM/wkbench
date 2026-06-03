@@ -49,6 +49,36 @@ func TestFrameReaderRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestFrameRoundTripArtifactChunk(t *testing.T) {
+	var buf bytes.Buffer
+	writer := NewFrameWriter(&buf)
+	want := &Frame{
+		RequestId:      "run-1",
+		RunId:          "scenario-1",
+		UnitInstanceId: "collector",
+		Body: &Frame_ArtifactChunk{ArtifactChunk: &ArtifactChunk{
+			Handle:   "artifact-1",
+			Sequence: 2,
+			Data:     []byte("payload"),
+		}},
+	}
+
+	if err := writer.WriteFrame(want); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	got, err := NewFrameReader(&buf, 1024).ReadFrame()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	chunk := got.GetArtifactChunk()
+	if chunk == nil {
+		t.Fatalf("artifact chunk frame missing: %#v", got)
+	}
+	if chunk.GetHandle() != "artifact-1" || chunk.GetSequence() != 2 || string(chunk.GetData()) != "payload" {
+		t.Fatalf("unexpected chunk: %#v", chunk)
+	}
+}
+
 func TestFrameReaderRejectsNegativeMaxBytes(t *testing.T) {
 	var buf bytes.Buffer
 	writer := NewFrameWriter(&buf)

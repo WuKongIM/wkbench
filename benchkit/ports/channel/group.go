@@ -14,6 +14,17 @@ type GroupSet interface {
 	At(index int) GroupChannel
 }
 
+// GroupSetData is the JSON-friendly data representation of a group set.
+type GroupSetData struct {
+	Items []GroupChannel `json:"items"`
+}
+
+// Count implements GroupSet.
+func (s GroupSetData) Count() int { return len(s.Items) }
+
+// At implements GroupSet.
+func (s GroupSetData) At(index int) GroupChannel { return s.Items[index] }
+
 // GroupChannel describes one group channel and its usable members.
 type GroupChannel struct {
 	// ChannelID is the protocol channel id.

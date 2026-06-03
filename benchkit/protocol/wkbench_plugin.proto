@@ -24,6 +24,11 @@ message Frame {
     SetOutput set_output = 22;
     TerminalStatus terminal_status = 23;
     Error error = 24;
+    ArtifactOpen artifact_open = 25;
+    ArtifactOpened artifact_opened = 26;
+    ArtifactChunk artifact_chunk = 27;
+    ArtifactClose artifact_close = 28;
+    ArtifactClosed artifact_closed = 29;
   }
 }
 
@@ -161,6 +166,30 @@ message MetricSnapshot {
 message SetOutput {
   string name = 1;
   PortValue value = 2;
+}
+
+message ArtifactOpen {
+  string name = 1;
+}
+
+message ArtifactOpened {
+  string name = 1;
+  string handle = 2;
+}
+
+message ArtifactChunk {
+  string handle = 1;
+  int64 sequence = 2;
+  bytes data = 3;
+}
+
+message ArtifactClose {
+  string handle = 1;
+}
+
+message ArtifactClosed {
+  string handle = 1;
+  int64 size_bytes = 2;
 }
 
 message TerminalStatus {

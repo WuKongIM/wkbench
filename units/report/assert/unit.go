@@ -52,12 +52,27 @@ func (Unit) Definition() contract.Definition {
 		Title:       "Report assertions",
 		Description: "Evaluates simple assertions over traffic summaries.",
 		Inputs: []contract.PortDef{
-			{Name: "summary", Type: trafficport.SummaryV1},
+			{Name: "summary", Type: trafficport.SummaryV1, Meta: inlineJSONDataMeta()},
 		},
 		Outputs: []contract.PortDef{
-			{Name: "result", Type: contract.PortType("port.report.assertion_result/v1")},
+			{Name: "result", Type: contract.PortType("port.report.assertion_result/v1"), Meta: reportableInlineJSONDataMeta()},
 		},
 	}
+}
+
+func inlineJSONDataMeta() contract.PortMeta {
+	return contract.PortMeta{
+		Boundary:        contract.PortBoundaryData,
+		Transport:       contract.PortTransportInline,
+		Encodings:       []string{"json"},
+		MaxPayloadBytes: contract.DefaultInlinePortMaxPayloadBytes,
+	}
+}
+
+func reportableInlineJSONDataMeta() contract.PortMeta {
+	meta := inlineJSONDataMeta()
+	meta.Reportable = true
+	return meta
 }
 
 // Validate implements contract.Unit.

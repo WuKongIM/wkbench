@@ -40,7 +40,7 @@ func (Unit) Definition() contract.Definition {
 		Title:       "Static group channels",
 		Description: "Produces deterministic in-memory group channels for examples and tests.",
 		Outputs: []contract.PortDef{
-			{Name: "groups", Type: channelport.GroupSetV1},
+			{Name: "groups", Type: channelport.GroupSetV1, Meta: inlineJSONDataMeta()},
 		},
 	}
 }
@@ -87,6 +87,15 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	return env.SetOutput("groups", GroupSet{Items: groups})
 }
 
+func inlineJSONDataMeta() contract.PortMeta {
+	return contract.PortMeta{
+		Boundary:        contract.PortBoundaryData,
+		Transport:       contract.PortTransportInline,
+		Encodings:       []string{"json"},
+		MaxPayloadBytes: contract.DefaultInlinePortMaxPayloadBytes,
+	}
+}
+
 func decodeSpec(env contract.ValidateEnv) (Spec, error) {
 	spec := Spec{ChannelPrefix: "group", UIDPrefix: "user"}
 	if err := env.DecodeSpec(&spec); err != nil {
@@ -104,17 +113,4 @@ func decodeSpec(env contract.ValidateEnv) (Spec, error) {
 }
 
 // GroupSet is a JSON-friendly channel set that implements channel.GroupSet.
-type GroupSet struct {
-	// Items contains generated group channels.
-	Items []channelport.GroupChannel `json:"items"`
-}
-
-// Count implements channel.GroupSet.
-func (s GroupSet) Count() int {
-	return len(s.Items)
-}
-
-// At implements channel.GroupSet.
-func (s GroupSet) At(index int) channelport.GroupChannel {
-	return s.Items[index]
-}
+type GroupSet = channelport.GroupSetData

@@ -2,6 +2,7 @@ package echo
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
@@ -36,6 +37,10 @@ func (Unit) Definition() contract.Definition {
 				Reportable: true,
 			},
 		}},
+		Artifacts: []contract.ArtifactDef{{
+			Name:        "echo.json",
+			ContentType: "application/json",
+		}},
 	}
 }
 
@@ -53,5 +58,17 @@ func (Unit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err := env.DecodeSpec(&spec); err != nil {
 		return err
 	}
-	return env.SetOutput("result", Result{Message: spec.Message})
+	result := Result{Message: spec.Message}
+	if err := env.SetOutput("result", result); err != nil {
+		return err
+	}
+	artifact, err := env.OpenArtifact("echo.json")
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(artifact).Encode(result); err != nil {
+		_ = artifact.Close()
+		return err
+	}
+	return artifact.Close()
 }

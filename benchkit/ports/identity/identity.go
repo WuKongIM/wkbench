@@ -27,6 +27,27 @@ type Pool interface {
 	At(index int) Identity
 }
 
+// PoolData is the JSON-friendly data representation of an identity pool.
+type PoolData struct {
+	Items []Identity `json:"items"`
+}
+
+// Count implements Pool.
+func (p PoolData) Count() int { return len(p.Items) }
+
+// At implements Pool.
+func (p PoolData) At(index int) Identity { return p.Items[index] }
+
+// TokenFor implements TokenSource.
+func (p PoolData) TokenFor(uid string) (string, bool) {
+	for _, item := range p.Items {
+		if item.UID == uid {
+			return item.Token, item.Token != ""
+		}
+	}
+	return "", false
+}
+
 // TokenSource resolves prepared tokens by uid.
 type TokenSource interface {
 	// TokenFor returns a token for uid when available.
