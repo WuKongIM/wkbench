@@ -14,6 +14,7 @@ func NewCatalog(plugins []Plugin) *Catalog {
 	unitsByKind := make(map[string][]Unit)
 	for _, plugin := range plugins {
 		for _, unit := range plugin.Units {
+			unit = cloneUnit(unit)
 			unit.PluginName = plugin.Name
 			unitsByKind[unit.Kind] = append(unitsByKind[unit.Kind], unit)
 		}
@@ -32,19 +33,35 @@ func (c *Catalog) Resolve(use string) (Unit, error) {
 		return Unit{}, fmt.Errorf("unit kind is required")
 	}
 	if pluginName, kind, ok := strings.Cut(use, ":"); ok {
+		pluginName = strings.TrimSpace(pluginName)
+		kind = strings.TrimSpace(kind)
+		if pluginName == "" {
+			return Unit{}, fmt.Errorf("plugin name is required")
+		}
+		if kind == "" {
+			return Unit{}, fmt.Errorf("unit kind is required")
+		}
+		matches := make([]Unit, 0, 1)
 		for _, unit := range c.unitsByKind[kind] {
 			if unit.PluginName == pluginName {
-				return unit, nil
+				matches = append(matches, unit)
 			}
 		}
-		return Unit{}, fmt.Errorf("unit kind %q from plugin %q is not registered", kind, pluginName)
+		switch len(matches) {
+		case 0:
+			return Unit{}, fmt.Errorf("unit kind %q from plugin %q is not registered", kind, pluginName)
+		case 1:
+			return cloneUnit(matches[0]), nil
+		default:
+			return Unit{}, fmt.Errorf("duplicate unit kind %q from plugin %q is registered", kind, pluginName)
+		}
 	}
 	matches := c.unitsByKind[use]
 	switch len(matches) {
 	case 0:
 		return Unit{}, fmt.Errorf("unit kind %q is not registered", use)
 	case 1:
-		return matches[0], nil
+		return cloneUnit(matches[0]), nil
 	default:
 		plugins := make([]string, 0, len(matches))
 		for _, unit := range matches {

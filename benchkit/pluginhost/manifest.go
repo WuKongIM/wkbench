@@ -1,6 +1,10 @@
 package pluginhost
 
-import "github.com/WuKongIM/wkbench/benchkit/contract"
+import (
+	"slices"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+)
 
 type Plugin struct {
 	Name     string
@@ -27,9 +31,26 @@ func (u Unit) Definition() contract.Definition {
 		Kind:        u.Kind,
 		Title:       u.Title,
 		Description: u.Description,
-		Inputs:      u.Inputs,
-		Outputs:     u.Outputs,
-		Metrics:     u.Metrics,
-		Artifacts:   u.Artifacts,
+		Inputs:      clonePortDefs(u.Inputs),
+		Outputs:     clonePortDefs(u.Outputs),
+		Metrics:     slices.Clone(u.Metrics),
+		Artifacts:   slices.Clone(u.Artifacts),
 	}
+}
+
+func cloneUnit(u Unit) Unit {
+	u.Inputs = clonePortDefs(u.Inputs)
+	u.Outputs = clonePortDefs(u.Outputs)
+	u.Metrics = slices.Clone(u.Metrics)
+	u.Artifacts = slices.Clone(u.Artifacts)
+	return u
+}
+
+func clonePortDefs(ports []contract.PortDef) []contract.PortDef {
+	ports = slices.Clone(ports)
+	for i := range ports {
+		ports[i].Meta.Encodings = slices.Clone(ports[i].Meta.Encodings)
+		ports[i].Meta.Operations = slices.Clone(ports[i].Meta.Operations)
+	}
+	return ports
 }
