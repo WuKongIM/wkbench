@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
 
 func TestStdioClientListsDemoPluginUnits(t *testing.T) {
@@ -33,6 +35,59 @@ func TestStdioClientListsDemoPluginUnits(t *testing.T) {
 	}
 	if len(manifest.Units) != 1 || manifest.Units[0].Kind != "demo.echo/v1" {
 		t.Fatalf("units = %#v", manifest.Units)
+	}
+}
+
+func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	client, err := StartStdioClient(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("close client: %v", err)
+		}
+	}()
+
+	if _, err := client.Handshake(context.Background()); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	req := UnitRequest{
+		PluginName:        "wkbench.demo",
+		UnitName:          "echo",
+		Kind:              "demo.echo/v1",
+		RunID:             "run-1",
+		RunDurationMillis: 1000,
+		WorkerCount:       1,
+		SpecJSON:          []byte(`{"message":"hello from stdio"}`),
+	}
+	if err := client.Validate(context.Background(), req); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	plan, err := client.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.UnitName != "echo" {
+		t.Fatalf("plan UnitName = %q", plan.UnitName)
+	}
+
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	if err := client.Run(context.Background(), RunRequest{UnitRequest: req}, env); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	output, ok := env.Output("result")
+	if !ok {
+		t.Fatal("missing result output")
+	}
+	result, ok := output.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", output)
+	}
+	if result["message"] != "hello from stdio" {
+		t.Fatalf("result message = %#v", result["message"])
 	}
 }
 

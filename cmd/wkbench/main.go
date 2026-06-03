@@ -163,16 +163,16 @@ type pendingLifecycleClient struct {
 	client *pluginhost.StdioClient
 }
 
-func (c pendingLifecycleClient) Validate(context.Context, pluginhost.UnitRequest) error {
-	return fmt.Errorf("plugin lifecycle RPC is not implemented yet")
+func (c pendingLifecycleClient) Validate(ctx context.Context, req pluginhost.UnitRequest) error {
+	return c.client.Validate(ctx, req)
 }
 
-func (c pendingLifecycleClient) Plan(context.Context, pluginhost.UnitRequest) (contract.Plan, error) {
-	return contract.Plan{}, fmt.Errorf("plugin lifecycle RPC is not implemented yet")
+func (c pendingLifecycleClient) Plan(ctx context.Context, req pluginhost.UnitRequest) (contract.Plan, error) {
+	return c.client.Plan(ctx, req)
 }
 
-func (c pendingLifecycleClient) Run(context.Context, pluginhost.RunRequest, contract.RunEnv) error {
-	return fmt.Errorf("plugin lifecycle RPC is not implemented yet")
+func (c pendingLifecycleClient) Run(ctx context.Context, req pluginhost.RunRequest, env contract.RunEnv) error {
+	return c.client.Run(ctx, req, env)
 }
 
 func runListUnits(reg *registry.Registry, stderr io.Writer) int {

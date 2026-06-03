@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ type StdioClient struct {
 	stateMu   sync.Mutex
 	closed    bool
 	killed    bool
+	nextSeq   int64
 }
 
 var errStdioClientClosed = errors.New("stdio plugin client closed")
@@ -120,6 +122,237 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		manifest.Protocol = response.GetSelectedProtocol()
 	}
 	return manifest, nil
+}
+
+func (c *StdioClient) Validate(ctx context.Context, req UnitRequest) error {
+	if err := ctx.Err(); err != nil {
+		c.shutdown(true)
+		c.startWait()
+		return err
+	}
+
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+	if c.isClosed() {
+		return errStdioClientClosed
+	}
+
+	requestID := c.nextRequestID("validate")
+	frame := &protocol.Frame{
+		RequestId:      requestID,
+		RunId:          req.RunID,
+		UnitInstanceId: req.UnitName,
+		Body: &protocol.Frame_ValidateRequest{ValidateRequest: &protocol.ValidateRequest{
+			UnitName: req.UnitName,
+			Kind:     req.Kind,
+			SpecJson: req.SpecJSON,
+		}},
+	}
+	response, err := c.writeRequestAndReadFrame(ctx, frame, "validate")
+	if err != nil {
+		return err
+	}
+	if rpcErr := response.GetError(); rpcErr != nil {
+		return pluginRPCError(rpcErr)
+	}
+	if response.GetValidateResponse() == nil {
+		return fmt.Errorf("expected validate response frame")
+	}
+	return nil
+}
+
+func (c *StdioClient) Plan(ctx context.Context, req UnitRequest) (contract.Plan, error) {
+	if err := ctx.Err(); err != nil {
+		c.shutdown(true)
+		c.startWait()
+		return contract.Plan{}, err
+	}
+
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+	if c.isClosed() {
+		return contract.Plan{}, errStdioClientClosed
+	}
+
+	requestID := c.nextRequestID("plan")
+	frame := &protocol.Frame{
+		RequestId:      requestID,
+		RunId:          req.RunID,
+		UnitInstanceId: req.UnitName,
+		Body: &protocol.Frame_PlanRequest{PlanRequest: &protocol.PlanRequest{
+			UnitName:          req.UnitName,
+			Kind:              req.Kind,
+			RunId:             req.RunID,
+			RunDurationMillis: req.RunDurationMillis,
+			WorkerCount:       int32(req.WorkerCount),
+			SpecJson:          req.SpecJSON,
+		}},
+	}
+	response, err := c.writeRequestAndReadFrame(ctx, frame, "plan")
+	if err != nil {
+		return contract.Plan{}, err
+	}
+	if rpcErr := response.GetError(); rpcErr != nil {
+		return contract.Plan{}, pluginRPCError(rpcErr)
+	}
+	planResponse := response.GetPlanResponse()
+	if planResponse == nil {
+		return contract.Plan{}, fmt.Errorf("expected plan response frame")
+	}
+	var plan contract.Plan
+	if len(planResponse.GetPlanJson()) > 0 {
+		if err := json.Unmarshal(planResponse.GetPlanJson(), &plan); err != nil {
+			return contract.Plan{}, fmt.Errorf("decode plan json: %w", err)
+		}
+	}
+	return plan, nil
+}
+
+func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunEnv) error {
+	if err := ctx.Err(); err != nil {
+		c.shutdown(true)
+		c.startWait()
+		return err
+	}
+
+	inputs, err := encodeInputPortValues(req.Inputs)
+	if err != nil {
+		return err
+	}
+
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+	if c.isClosed() {
+		return errStdioClientClosed
+	}
+
+	requestID := c.nextRequestID("run")
+	if err := c.writer.WriteFrame(&protocol.Frame{
+		RequestId:      requestID,
+		RunId:          req.RunID,
+		UnitInstanceId: req.UnitName,
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          req.UnitName,
+			Kind:              req.Kind,
+			RunId:             req.RunID,
+			RunDurationMillis: req.RunDurationMillis,
+			WorkerCount:       int32(req.WorkerCount),
+			SpecJson:          req.SpecJSON,
+			Inputs:            inputs,
+		}},
+	}); err != nil {
+		return fmt.Errorf("write run request: %w", err)
+	}
+
+	for {
+		frame, err := c.readFrame(ctx, "run")
+		if err != nil {
+			return err
+		}
+		if frame.GetRequestId() != requestID {
+			return fmt.Errorf("run response request id = %q, want %q", frame.GetRequestId(), requestID)
+		}
+		switch body := frame.Body.(type) {
+		case *protocol.Frame_SetOutput:
+			if err := setOutputFromFrame(env, body.SetOutput); err != nil {
+				return err
+			}
+		case *protocol.Frame_TerminalStatus:
+			if body.TerminalStatus.GetOk() {
+				return nil
+			}
+			if rpcErr := body.TerminalStatus.GetError(); rpcErr != nil {
+				return pluginRPCError(rpcErr)
+			}
+			return fmt.Errorf("plugin run failed")
+		case *protocol.Frame_Error:
+			return pluginRPCError(body.Error)
+		default:
+			return fmt.Errorf("unexpected run response frame %T", frame.Body)
+		}
+	}
+}
+
+func (c *StdioClient) nextRequestID(prefix string) string {
+	c.nextSeq++
+	return fmt.Sprintf("%s-%d", prefix, c.nextSeq)
+}
+
+func (c *StdioClient) writeRequestAndReadFrame(ctx context.Context, frame *protocol.Frame, op string) (*protocol.Frame, error) {
+	if err := c.writer.WriteFrame(frame); err != nil {
+		return nil, fmt.Errorf("write %s request: %w", op, err)
+	}
+	response, err := c.readFrame(ctx, op)
+	if err != nil {
+		return nil, err
+	}
+	if response.GetRequestId() != frame.GetRequestId() {
+		return nil, fmt.Errorf("%s response request id = %q, want %q", op, response.GetRequestId(), frame.GetRequestId())
+	}
+	return response, nil
+}
+
+func (c *StdioClient) readFrame(ctx context.Context, op string) (*protocol.Frame, error) {
+	readResultCh := make(chan readResult, 1)
+	go func() {
+		frame, err := c.reader.ReadFrame()
+		readResultCh <- readResult{frame: frame, err: err}
+	}()
+
+	result, canceled, ctxErr := waitForFrame(ctx, readResultCh)
+	if canceled {
+		c.shutdown(true)
+		c.startWait()
+		<-readResultCh
+		return nil, fmt.Errorf("%s canceled: %w", op, ctxErr)
+	}
+	if result.err != nil {
+		return nil, fmt.Errorf("read %s response: %w", op, result.err)
+	}
+	return result.frame, nil
+}
+
+func encodeInputPortValues(inputs map[string]any) (map[string]*protocol.PortValue, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*protocol.PortValue, len(inputs))
+	for name, value := range inputs {
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode input %q json: %w", name, err)
+		}
+		out[name] = &protocol.PortValue{
+			Encoding:  "json",
+			Transport: string(contract.PortTransportInline),
+			Payload:   payload,
+		}
+	}
+	return out, nil
+}
+
+func setOutputFromFrame(env contract.RunEnv, output *protocol.SetOutput) error {
+	if output == nil {
+		return fmt.Errorf("set output frame missing output")
+	}
+	var decoded any
+	value := output.GetValue()
+	if value != nil && len(value.GetPayload()) > 0 {
+		if err := json.Unmarshal(value.GetPayload(), &decoded); err != nil {
+			return fmt.Errorf("decode output %q json: %w", output.GetName(), err)
+		}
+	}
+	if err := env.SetOutput(output.GetName(), decoded); err != nil {
+		return fmt.Errorf("set output %q: %w", output.GetName(), err)
+	}
+	return nil
+}
+
+func pluginRPCError(err *protocol.Error) error {
+	if err == nil {
+		return fmt.Errorf("plugin error")
+	}
+	return fmt.Errorf("plugin error %s: %s", err.GetCode(), err.GetMessage())
 }
 
 func waitForFrame(ctx context.Context, readResultCh <-chan readResult) (readResult, bool, error) {

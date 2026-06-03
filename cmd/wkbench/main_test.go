@@ -154,6 +154,30 @@ func TestListUnitsIncludesExternalPlugin(t *testing.T) {
 	}
 }
 
+func TestValidateExternalPluginScenario(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "validate", "-scenario", filepath.Join(repoRoot(t), "examples/plugin-echo.yaml")}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench scenario is valid") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+}
+
+func TestRunExternalPluginScenario(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "run", "-scenario", filepath.Join(repoRoot(t), "examples/plugin-echo.yaml")}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench run completed") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+}
+
 func TestListUnitsClosesExternalPluginClient(t *testing.T) {
 	bin, closedPath := buildTrackingDemoPlugin(t)
 	var stderr bytes.Buffer
@@ -240,6 +264,24 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repo root not found")
+		}
+		dir = parent
+	}
 }
 
 func TestValidateCommandAcceptsMetricsCollectorScenario(t *testing.T) {

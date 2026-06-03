@@ -1,9 +1,13 @@
 package plugin
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/pluginhost"
@@ -16,10 +20,35 @@ type Plugin struct {
 	Units   []contract.Unit
 }
 
+type server struct {
+	manifest    pluginhost.Plugin
+	unitsByKind map[string]contract.Unit
+}
+
+func newServer(plugin Plugin) *server {
+	unitsByKind := make(map[string]contract.Unit, len(plugin.Units))
+	for _, unit := range plugin.Units {
+		unitsByKind[unit.Definition().Kind] = unit
+	}
+	return &server{
+		manifest:    ManifestFromUnits(plugin.Name, plugin.Version, plugin.Units),
+		unitsByKind: unitsByKind,
+	}
+}
+
+func (s *server) unit(kind string) (contract.Unit, error) {
+	unit, ok := s.unitsByKind[kind]
+	if !ok {
+		return nil, fmt.Errorf("unit kind %q is not registered", kind)
+	}
+	return unit, nil
+}
+
 func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
-	manifest := ManifestFromUnits(plugin.Name, plugin.Version, plugin.Units)
+	srv := newServer(plugin)
 	reader := protocol.NewFrameReader(stdin, 16<<20)
 	writer := protocol.NewFrameWriter(stdout)
+	ctx := context.Background()
 
 	for {
 		frame, err := reader.ReadFrame()
@@ -35,7 +64,7 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 			if err := writer.WriteFrame(&protocol.Frame{
 				RequestId: frame.GetRequestId(),
 				Body: &protocol.Frame_HandshakeResponse{HandshakeResponse: &protocol.HandshakeResponse{
-					Manifest:         manifestToProto(manifest),
+					Manifest:         manifestToProto(srv.manifest),
 					SelectedProtocol: "wkbench.plugin/v1",
 				}},
 			}); err != nil {
@@ -45,23 +74,158 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 			if err := writer.WriteFrame(&protocol.Frame{
 				RequestId: frame.GetRequestId(),
 				Body: &protocol.Frame_ListUnitsResponse{ListUnitsResponse: &protocol.ListUnitsResponse{
-					Units: unitsToProto(manifest.Units),
+					Units: unitsToProto(srv.manifest.Units),
 				}},
 			}); err != nil {
 				return err
 			}
+		case *protocol.Frame_ValidateRequest:
+			if err := srv.handleValidate(ctx, frame, frame.GetValidateRequest(), writer); err != nil {
+				return err
+			}
+		case *protocol.Frame_PlanRequest:
+			if err := srv.handlePlan(ctx, frame, frame.GetPlanRequest(), writer); err != nil {
+				return err
+			}
+		case *protocol.Frame_RunRequest:
+			if err := srv.handleRun(ctx, frame, frame.GetRunRequest(), writer); err != nil {
+				return err
+			}
 		default:
-			if err := writer.WriteFrame(&protocol.Frame{
-				RequestId: frame.GetRequestId(),
-				Body: &protocol.Frame_Error{Error: &protocol.Error{
-					Code:    "UNSUPPORTED",
-					Message: "unsupported frame",
-				}},
-			}); err != nil {
+			if err := writeProtocolError(writer, frame.GetRequestId(), "UNSUPPORTED", "unsupported frame"); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func (s *server) handleValidate(ctx context.Context, frame *protocol.Frame, req *protocol.ValidateRequest, writer *protocol.FrameWriter) error {
+	unit, err := s.unit(req.GetKind())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+	}
+	spec, err := decodeSpecMap(req.GetSpecJson())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+	}
+	env := contract.NewTestRunEnv("", req.GetUnitName(), nil, spec)
+	if err := unit.Validate(ctx, env); err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+	}
+	return writer.WriteFrame(&protocol.Frame{
+		RequestId: frame.GetRequestId(),
+		Body:      &protocol.Frame_ValidateResponse{ValidateResponse: &protocol.ValidateResponse{}},
+	})
+}
+
+func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *protocol.PlanRequest, writer *protocol.FrameWriter) error {
+	unit, err := s.unit(req.GetKind())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+	}
+	spec, err := decodeSpecMap(req.GetSpecJson())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+	}
+	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), nil, spec)
+	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
+	plan, err := unit.Plan(ctx, env)
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+	}
+	payload, err := encodeJSONPayload(plan)
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+	}
+	return writer.WriteFrame(&protocol.Frame{
+		RequestId: frame.GetRequestId(),
+		Body:      &protocol.Frame_PlanResponse{PlanResponse: &protocol.PlanResponse{PlanJson: payload}},
+	})
+}
+
+func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *protocol.RunRequest, writer *protocol.FrameWriter) error {
+	unit, err := s.unit(req.GetKind())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	spec, err := decodeSpecMap(req.GetSpecJson())
+	if err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	inputs := make(map[string]any, len(req.GetInputs()))
+	for name, value := range req.GetInputs() {
+		var decoded any
+		if value != nil && len(value.GetPayload()) > 0 {
+			if err := json.Unmarshal(value.GetPayload(), &decoded); err != nil {
+				return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", fmt.Sprintf("decode input %q json: %v", name, err))
+			}
+		}
+		inputs[name] = decoded
+	}
+	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), inputs, spec)
+	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
+	if err := unit.Run(ctx, env); err != nil {
+		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	for _, output := range unit.Definition().Outputs {
+		value, ok := env.Output(output.Name)
+		if !ok {
+			continue
+		}
+		payload, err := encodeJSONPayload(value)
+		if err != nil {
+			return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+		}
+		if err := writer.WriteFrame(&protocol.Frame{
+			RequestId: frame.GetRequestId(),
+			Body: &protocol.Frame_SetOutput{SetOutput: &protocol.SetOutput{
+				Name: output.Name,
+				Value: &protocol.PortValue{
+					Type:       string(output.Type),
+					Encoding:   "json",
+					Transport:  string(output.Meta.Transport),
+					Sensitive:  output.Meta.Sensitive,
+					Reportable: output.Meta.Reportable,
+					Payload:    payload,
+				},
+			}},
+		}); err != nil {
+			return err
+		}
+	}
+	return writer.WriteFrame(&protocol.Frame{
+		RequestId: frame.GetRequestId(),
+		Body:      &protocol.Frame_TerminalStatus{TerminalStatus: &protocol.TerminalStatus{Ok: true}},
+	})
+}
+
+func decodeSpecMap(data []byte) (map[string]any, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("decode spec json: %w", err)
+	}
+	return spec, nil
+}
+
+func encodeJSONPayload(value any) ([]byte, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode json payload: %w", err)
+	}
+	return payload, nil
+}
+
+func writeProtocolError(writer *protocol.FrameWriter, requestID, code, message string) error {
+	return writer.WriteFrame(&protocol.Frame{
+		RequestId: requestID,
+		Body: &protocol.Frame_Error{Error: &protocol.Error{
+			Code:    code,
+			Message: message,
+		}},
+	})
 }
 
 func ManifestFromUnits(name, version string, units []contract.Unit) pluginhost.Plugin {
