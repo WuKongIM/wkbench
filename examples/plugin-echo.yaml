@@ -1,0 +1,11 @@
+version: wkbench/v2
+
+run:
+  id: plugin-echo-demo
+  duration: 1s
+
+units:
+  echo:
+    use: demo.echo/v1
+    spec:
+      message: hello from plugin

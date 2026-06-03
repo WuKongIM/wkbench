@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
+	"github.com/WuKongIM/wkbench/benchkit/pluginhost"
 	"github.com/WuKongIM/wkbench/benchkit/registry"
 	"github.com/WuKongIM/wkbench/benchkit/report"
 	"github.com/WuKongIM/wkbench/benchkit/scaffold"
@@ -39,27 +42,63 @@ func main() {
 	os.Exit(runWithStderr(os.Args[1:], os.Stderr))
 }
 
+type cliConfig struct {
+	Plugins []string
+	Command string
+	Args    []string
+}
+
+func parseGlobalArgs(args []string, stderr io.Writer) (cliConfig, int) {
+	fs := flag.NewFlagSet("wkbench", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var plugins multiString
+	fs.Var(&plugins, "plugin", "external wkbench plugin executable; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return cliConfig{}, exitConfig
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(stderr, "usage: wkbench [-plugin path] <list-units|new-unit|explain|plan|validate|run>")
+		return cliConfig{}, exitConfig
+	}
+	return cliConfig{Plugins: plugins, Command: rest[0], Args: rest[1:]}, exitOK
+}
+
+type multiString []string
+
+func (m *multiString) String() string {
+	return strings.Join(*m, ",")
+}
+
+func (m *multiString) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
+
 func runWithStderr(args []string, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench <list-units|new-unit|explain|plan|validate|run>")
-		return exitConfig
+	cfg, code := parseGlobalArgs(args, stderr)
+	if code != exitOK {
+		return code
 	}
 	reg := defaultRegistry()
-	switch args[0] {
+	if code := loadExternalPlugins(reg, cfg.Plugins, stderr); code != exitOK {
+		return code
+	}
+	switch cfg.Command {
 	case "list-units":
 		return runListUnits(reg, stderr)
 	case "new-unit":
-		return runNewUnit(args[1:], stderr)
+		return runNewUnit(cfg.Args, stderr)
 	case "explain":
-		return runExplain(reg, args[1:], stderr)
+		return runExplain(reg, cfg.Args, stderr)
 	case "plan":
-		return runPlan(reg, args[1:], stderr)
+		return runPlan(reg, cfg.Args, stderr)
 	case "validate":
-		return runValidate(reg, args[1:], stderr)
+		return runValidate(reg, cfg.Args, stderr)
 	case "run":
-		return runScenario(reg, args[1:], stderr)
+		return runScenario(reg, cfg.Args, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
+		fmt.Fprintf(stderr, "unknown command %q\n", cfg.Command)
 		return exitConfig
 	}
 }
@@ -80,6 +119,45 @@ func defaultRegistry() *registry.Registry {
 	sendtraffic.Register(reg)
 	assertunit.Register(reg)
 	return reg
+}
+
+func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Writer) int {
+	for _, path := range paths {
+		client, err := pluginhost.StartStdioClient(context.Background(), path)
+		if err != nil {
+			fmt.Fprintf(stderr, "plugin %s failed to start: %v\n", path, err)
+			return exitConfig
+		}
+		manifest, err := client.Handshake(context.Background())
+		if err != nil {
+			fmt.Fprintf(stderr, "plugin %s handshake failed: %v\n", path, err)
+			return exitConfig
+		}
+		remoteClient := pendingLifecycleClient{client: client}
+		for _, unit := range manifest.Units {
+			if err := reg.Register(pluginhost.NewRemoteUnit(remoteClient, unit)); err != nil {
+				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", path, err)
+				return exitConfig
+			}
+		}
+	}
+	return exitOK
+}
+
+type pendingLifecycleClient struct {
+	client *pluginhost.StdioClient
+}
+
+func (c pendingLifecycleClient) Validate(context.Context, pluginhost.UnitRequest) error {
+	return fmt.Errorf("plugin lifecycle RPC is not implemented yet")
+}
+
+func (c pendingLifecycleClient) Plan(context.Context, pluginhost.UnitRequest) (contract.Plan, error) {
+	return contract.Plan{}, fmt.Errorf("plugin lifecycle RPC is not implemented yet")
+}
+
+func (c pendingLifecycleClient) Run(context.Context, pluginhost.RunRequest, contract.RunEnv) error {
+	return fmt.Errorf("plugin lifecycle RPC is not implemented yet")
 }
 
 func runListUnits(reg *registry.Registry, stderr io.Writer) int {

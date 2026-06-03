@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,6 +138,30 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 			t.Fatalf("expected list-units to include %s, got:\n%s", want, out)
 		}
 	}
+}
+
+func TestListUnitsIncludesExternalPlugin(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "list-units"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "demo.echo/v1") {
+		t.Fatalf("list-units missing plugin unit:\n%s", stderr.String())
+	}
+}
+
+func buildDemoPlugin(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, "./plugins/demo/cmd/wkbench-demo-plugin")
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build demo plugin: %v\n%s", err, out)
+	}
+	return bin
 }
 
 func TestValidateCommandAcceptsMetricsCollectorScenario(t *testing.T) {
