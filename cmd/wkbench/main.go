@@ -124,7 +124,14 @@ func defaultRegistry() *registry.Registry {
 }
 
 func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Writer) ([]*pluginhost.StdioClient, int) {
+	type loadedPlugin struct {
+		path     string
+		client   *pluginhost.StdioClient
+		manifest pluginhost.Plugin
+	}
 	var clients []*pluginhost.StdioClient
+	var loaded []loadedPlugin
+	bareKindCounts := make(map[string]int)
 	for _, path := range paths {
 		client, err := pluginhost.StartStdioClient(context.Background(), path)
 		if err != nil {
@@ -139,12 +146,25 @@ func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Write
 			closePluginClients(clients, stderr)
 			return nil, exitConfig
 		}
-		remoteClient := pendingLifecycleClient{client: client}
+		loaded = append(loaded, loadedPlugin{path: path, client: client, manifest: manifest})
 		for _, unit := range manifest.Units {
-			if err := reg.Register(pluginhost.NewRemoteUnit(remoteClient, unit)); err != nil {
-				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", path, err)
+			bareKindCounts[unit.Kind]++
+		}
+	}
+	for _, plugin := range loaded {
+		remoteClient := pendingLifecycleClient{client: plugin.client}
+		for _, unit := range plugin.manifest.Units {
+			qualifiedKind := plugin.manifest.Name + ":" + unit.Kind
+			if err := reg.Register(pluginhost.NewRemoteUnitAlias(remoteClient, unit, qualifiedKind)); err != nil {
+				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", plugin.path, err)
 				closePluginClients(clients, stderr)
 				return nil, exitConfig
+			}
+			if bareKindCounts[unit.Kind] != 1 {
+				continue
+			}
+			if err := reg.Register(pluginhost.NewRemoteUnit(remoteClient, unit)); err != nil {
+				continue
 			}
 		}
 	}

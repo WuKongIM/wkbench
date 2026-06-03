@@ -106,8 +106,8 @@ units:
 ```
 
 The host also resolves a bare kind when exactly one loaded plugin provides that
-kind, but plugin-qualified references avoid ambiguity as more plugins are
-loaded.
+kind and no existing registry kind already uses it. Plugin-qualified references
+avoid ambiguity as more plugins are loaded.
 
 Use explicit `inputs` when more than one unit can provide the same port type.
 Composition stays in scenario YAML; plugin units should not import other

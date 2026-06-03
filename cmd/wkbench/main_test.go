@@ -149,8 +149,11 @@ func TestListUnitsIncludesExternalPlugin(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "demo.echo/v1") {
-		t.Fatalf("list-units missing plugin unit:\n%s", stderr.String())
+	out := stderr.String()
+	for _, want := range []string{"demo.echo/v1", "wkbench.demo:demo.echo/v1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list-units missing %s:\n%s", want, out)
+		}
 	}
 }
 
@@ -170,6 +173,54 @@ func TestRunExternalPluginScenario(t *testing.T) {
 	bin := buildDemoPlugin(t)
 	var stderr bytes.Buffer
 	code := runWithStderr([]string{"-plugin", bin, "run", "-scenario", filepath.Join(repoRoot(t), "examples/plugin-echo.yaml")}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench run completed") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+}
+
+func TestValidateExternalPluginScenarioWithQualifiedKind(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: plugin-qualified
+  duration: 1s
+units:
+  echo:
+    use: wkbench.demo:demo.echo/v1
+    spec:
+      message: hello qualified plugin
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "validate", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench scenario is valid") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+}
+
+func TestRunExternalPluginScenarioWithQualifiedKind(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: plugin-qualified
+  duration: 1s
+units:
+  echo:
+    use: wkbench.demo:demo.echo/v1
+    spec:
+      message: hello qualified plugin
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "run", "-scenario", scenarioPath}, &stderr)
 	if code != exitOK {
 		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
 	}
@@ -223,16 +274,50 @@ func TestListUnitsClosesExternalPluginClient(t *testing.T) {
 	waitForFile(t, closedPath)
 }
 
-func TestPluginRegistrationFailureClosesStartedClients(t *testing.T) {
-	firstBin, firstClosed := buildTrackingDemoPlugin(t)
-	secondBin, secondClosed := buildTrackingDemoPlugin(t)
+func TestPluginRegistrationDuplicateBareKindKeepsQualifiedReferences(t *testing.T) {
+	firstBin, firstClosed := buildNamedTrackingDemoPlugin(t, "wkbench.demo.first")
+	secondBin, secondClosed := buildNamedTrackingDemoPlugin(t, "wkbench.demo.second")
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: plugin-qualified-duplicate
+  duration: 1s
+units:
+  echo:
+    use: wkbench.demo.second:demo.echo/v1
+    spec:
+      message: hello duplicate plugin
+`)
+
 	var stderr bytes.Buffer
-	code := runWithStderr([]string{"-plugin", firstBin, "-plugin", secondBin, "list-units"}, &stderr)
-	if code != exitConfig {
-		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	code := runWithStderr([]string{"-plugin", firstBin, "-plugin", secondBin, "validate", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("qualified code = %d, stderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "registration failed") {
-		t.Fatalf("stderr missing registration failure:\n%s", stderr.String())
+	waitForFile(t, firstClosed)
+	waitForFile(t, secondClosed)
+
+	firstBin, firstClosed = buildNamedTrackingDemoPlugin(t, "wkbench.demo.first")
+	secondBin, secondClosed = buildNamedTrackingDemoPlugin(t, "wkbench.demo.second")
+	bareScenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: plugin-bare-duplicate
+  duration: 1s
+units:
+  echo:
+    use: demo.echo/v1
+    spec:
+      message: hello ambiguous plugin
+`)
+
+	stderr.Reset()
+	code = runWithStderr([]string{"-plugin", firstBin, "-plugin", secondBin, "validate", "-scenario", bareScenarioPath}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("bare code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `unit kind "demo.echo/v1" is not registered`) {
+		t.Fatalf("bare use was not rejected as unavailable:\n%s", stderr.String())
 	}
 	waitForFile(t, firstClosed)
 	waitForFile(t, secondClosed)
@@ -252,6 +337,11 @@ func buildDemoPlugin(t *testing.T) string {
 
 func buildTrackingDemoPlugin(t *testing.T) (string, string) {
 	t.Helper()
+	return buildNamedTrackingDemoPlugin(t, "wkbench.demo.tracking")
+}
+
+func buildNamedTrackingDemoPlugin(t *testing.T, pluginName string) (string, string) {
+	t.Helper()
 	dir := t.TempDir()
 	closedPath := filepath.Join(dir, "closed")
 	sourcePath := filepath.Join(dir, "main.go")
@@ -268,14 +358,14 @@ import (
 func main() {
 	defer os.WriteFile(%q, []byte("closed"), 0o644)
 	if err := wkplugin.Serve(wkplugin.Plugin{
-		Name:    "wkbench.demo.tracking",
+		Name:    %q,
 		Version: "0.1.0",
 		Units:   []contract.Unit{echo.Unit{}},
 	}, os.Stdin, os.Stdout); err != nil {
 		os.Exit(1)
 	}
 }
-`, closedPath)
+`, closedPath, pluginName)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}

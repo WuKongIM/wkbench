@@ -8,16 +8,25 @@ import (
 )
 
 type RemoteUnit struct {
-	client Client
-	unit   Unit
+	client    Client
+	unit      Unit
+	aliasKind string
 }
 
 func NewRemoteUnit(client Client, unit Unit) RemoteUnit {
 	return RemoteUnit{client: client, unit: unit}
 }
 
+func NewRemoteUnitAlias(client Client, unit Unit, aliasKind string) RemoteUnit {
+	return RemoteUnit{client: client, unit: unit, aliasKind: aliasKind}
+}
+
 func (u RemoteUnit) Definition() contract.Definition {
-	return u.unit.Definition()
+	def := u.unit.Definition()
+	if u.aliasKind != "" {
+		def.Kind = u.aliasKind
+	}
+	return def
 }
 
 func (u RemoteUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {

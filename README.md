@@ -52,7 +52,8 @@ Scenario YAML can reference external units as `<plugin-name>:<kind>`, for
 example `wkbench.demo:demo.echo/v1`. During Phase 1, official units still run
 in-process while external plugin units are registered as remote proxies. The
 final architecture will remove direct unit registration from the host binary
-after migration.
+after migration. See [docs/plugin-authoring.md](docs/plugin-authoring.md) for
+authoring details and Phase 1 limits.
 
 Create a new unit skeleton:
 
