@@ -912,6 +912,10 @@ func (e *runEnv) ObserveDuration(name string, value time.Duration, labels contra
 	e.metrics.observeDuration(name, value, labels)
 }
 
+func (e *runEnv) RecordMetricSnapshot(snapshot contract.MetricSnapshot) {
+	e.metrics.recordSnapshot(snapshot)
+}
+
 func (e *runEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	def, ok := e.artifactDefs[name]
 	if !ok {
@@ -1039,6 +1043,7 @@ type metricStore struct {
 	types           map[string]string
 	items           map[string]MetricResult
 	durationSamples map[string][]float64
+	aggregateKeys   map[string]bool
 }
 
 func newMetricStore(defs []contract.MetricDef) *metricStore {
@@ -1053,6 +1058,7 @@ func newMetricStore(defs []contract.MetricDef) *metricStore {
 		types:           types,
 		items:           make(map[string]MetricResult),
 		durationSamples: make(map[string][]float64),
+		aggregateKeys:   make(map[string]bool),
 	}
 }
 
@@ -1095,6 +1101,41 @@ func (s *metricStore) observeDuration(name string, value time.Duration, labels c
 	s.durationSamples[key] = append(s.durationSamples[key], seconds)
 }
 
+func (s *metricStore) recordSnapshot(snapshot contract.MetricSnapshot) {
+	if snapshot.Count <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := metricKey(snapshot.Name, snapshot.Labels)
+	item := s.items[key]
+	if item.Type == "" {
+		item.Type = metricType(s.types[snapshot.Name], snapshot.Type)
+		if item.Type == "" {
+			item.Type = "counter"
+		}
+		item.Labels = cloneLabels(snapshot.Labels)
+	}
+	item.Count += snapshot.Count
+	item.Sum += snapshot.Sum
+	if snapshot.Type == "duration" || item.Type == "duration" {
+		item.Type = metricType(s.types[snapshot.Name], "duration")
+		if item.Count == snapshot.Count {
+			item.Min = snapshot.Min
+			item.Max = snapshot.Max
+		} else {
+			if item.Min == 0 || snapshot.Min < item.Min {
+				item.Min = snapshot.Min
+			}
+			if snapshot.Max > item.Max {
+				item.Max = snapshot.Max
+			}
+		}
+		s.aggregateKeys[key] = true
+	}
+	s.items[key] = item
+}
+
 func (s *metricStore) results() map[string]MetricResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1104,7 +1145,7 @@ func (s *metricStore) results() map[string]MetricResult {
 	results := make(map[string]MetricResult, len(s.items)+len(s.types))
 	emittedNames := make(map[string]bool, len(s.items))
 	for key, item := range s.items {
-		if item.Type == "duration" {
+		if item.Type == "duration" && !s.aggregateKeys[key] {
 			item.P95 = percentileNearestRank(s.durationSamples[key], 95)
 			item.P99 = percentileNearestRank(s.durationSamples[key], 99)
 		}

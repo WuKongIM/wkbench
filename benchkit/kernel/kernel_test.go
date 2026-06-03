@@ -318,6 +318,32 @@ func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	}
 }
 
+func TestEngineRecordsAggregateDurationSnapshotWithoutPercentiles(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(aggregateMetricUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "aggregate-metrics"},
+		Units: map[string]dsl.UnitNode{
+			"metrics": {Use: "test.aggregate_metrics"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	duration := result.Units["metrics"].Metrics["latency"]
+	if duration.Type != "duration" || duration.Count != 2 ||
+		math.Abs(duration.Sum-0.004) > 0.0000001 ||
+		math.Abs(duration.Min-0.001) > 0.0000001 ||
+		math.Abs(duration.Max-0.003) > 0.0000001 {
+		t.Fatalf("duration metric = %#v", duration)
+	}
+	if duration.P95 != 0 || duration.P99 != 0 {
+		t.Fatalf("aggregate duration should not publish fake percentiles: %#v", duration)
+	}
+}
+
 func TestEnginePreservesMetricsWhenUnitRunFails(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(failingMetricUnit{})
@@ -1580,6 +1606,41 @@ func (failingMetricUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan,
 func (failingMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	env.EmitCounter("before_fail_total", 1, nil)
 	return fmt.Errorf("boom")
+}
+
+type aggregateMetricUnit struct{}
+
+func (aggregateMetricUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.aggregate_metrics/v1",
+		Metrics: []contract.MetricDef{
+			{Name: "latency", Type: "duration"},
+		},
+	}
+}
+
+func (aggregateMetricUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (aggregateMetricUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (aggregateMetricUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	recorder, ok := env.(contract.MetricSnapshotRecorder)
+	if !ok {
+		return fmt.Errorf("env does not record metric snapshots")
+	}
+	recorder.RecordMetricSnapshot(contract.MetricSnapshot{
+		Name:  "latency",
+		Type:  "duration",
+		Count: 2,
+		Sum:   0.004,
+		Min:   0.001,
+		Max:   0.003,
+	})
+	return nil
 }
 
 const artifactMetricsPayload = "{\"sendack_ok\":1}\n"

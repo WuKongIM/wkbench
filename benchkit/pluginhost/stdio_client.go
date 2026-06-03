@@ -385,47 +385,31 @@ func applyMetricFlush(env contract.RunEnv, flush *protocol.MetricFlush) {
 		if metric == nil || metric.GetCount() <= 0 {
 			continue
 		}
-		labels := contract.Labels(metric.GetLabels())
-		switch metric.GetType() {
-		case "duration":
-			replayDurationSnapshot(env, metric, labels)
-		default:
-			replayCounterSnapshot(env, metric, labels)
+		snapshot := contract.MetricSnapshot{
+			Name:   metric.GetName(),
+			Type:   metric.GetType(),
+			Labels: contract.Labels(metric.GetLabels()),
+			Count:  metric.GetCount(),
+			Sum:    metric.GetSum(),
+			Min:    metric.GetMin(),
+			Max:    metric.GetMax(),
+		}
+		if recorder, ok := env.(contract.MetricSnapshotRecorder); ok {
+			recorder.RecordMetricSnapshot(snapshot)
+			continue
+		}
+		if snapshot.Type != "duration" {
+			replayCounterSnapshot(env, snapshot)
 		}
 	}
 }
 
-func replayCounterSnapshot(env contract.RunEnv, metric *protocol.MetricSnapshot, labels contract.Labels) {
-	count := metric.GetCount()
-	delta := metric.GetSum() / float64(count)
+func replayCounterSnapshot(env contract.RunEnv, snapshot contract.MetricSnapshot) {
+	count := snapshot.Count
+	delta := snapshot.Sum / float64(count)
 	for i := int64(0); i < count; i++ {
-		env.EmitCounter(metric.GetName(), delta, labels)
+		env.EmitCounter(snapshot.Name, delta, snapshot.Labels)
 	}
-}
-
-func replayDurationSnapshot(env contract.RunEnv, metric *protocol.MetricSnapshot, labels contract.Labels) {
-	count := metric.GetCount()
-	if count == 1 {
-		env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetSum()), labels)
-		return
-	}
-	// MetricFlush carries aggregates, not raw samples. Replay a compact sample
-	// set that preserves report count, sum, min, and max.
-	env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetMin()), labels)
-	env.ObserveDuration(metric.GetName(), secondsDuration(metric.GetMax()), labels)
-	if count == 2 {
-		return
-	}
-	remainingCount := count - 2
-	remainingSum := metric.GetSum() - metric.GetMin() - metric.GetMax()
-	average := remainingSum / float64(remainingCount)
-	for i := int64(0); i < remainingCount; i++ {
-		env.ObserveDuration(metric.GetName(), secondsDuration(average), labels)
-	}
-}
-
-func secondsDuration(seconds float64) time.Duration {
-	return time.Duration(seconds * float64(time.Second))
 }
 
 func pluginRPCError(err *protocol.Error) error {

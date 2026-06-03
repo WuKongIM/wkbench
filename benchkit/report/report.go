@@ -185,16 +185,17 @@ func formatMetric(name string, metric kernel.MetricResult) string {
 		if metric.Count > 0 {
 			avg = metric.Sum / float64(metric.Count)
 		}
-		return fmt.Sprintf(
-			"  - metric `%s` `duration`: count `%d`, avg `%s`, p95 `%s`, p99 `%s`, min `%s`, max `%s`\n",
+		line := fmt.Sprintf(
+			"  - metric `%s` `duration`: count `%d`, avg `%s`",
 			name,
 			metric.Count,
 			formatMilliseconds(avg),
-			formatMilliseconds(metric.P95),
-			formatMilliseconds(metric.P99),
-			formatMilliseconds(metric.Min),
-			formatMilliseconds(metric.Max),
 		)
+		if metric.P95 != 0 || metric.P99 != 0 {
+			line += fmt.Sprintf(", p95 `%s`, p99 `%s`", formatMilliseconds(metric.P95), formatMilliseconds(metric.P99))
+		}
+		line += fmt.Sprintf(", min `%s`, max `%s`\n", formatMilliseconds(metric.Min), formatMilliseconds(metric.Max))
+		return line
 	default:
 		metricType := metric.Type
 		if metricType == "" {

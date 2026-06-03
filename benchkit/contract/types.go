@@ -204,6 +204,12 @@ type RunEnv interface {
 	OpenArtifact(name string) (io.WriteCloser, error)
 }
 
+// MetricSnapshotRecorder records aggregate metric snapshots when exact samples
+// are unavailable, such as across the plugin process boundary.
+type MetricSnapshotRecorder interface {
+	RecordMetricSnapshot(MetricSnapshot)
+}
+
 // ReportableOutput allows output values to opt into JSON/Markdown reports.
 type ReportableOutput interface {
 	// ReportOutput returns a JSON-friendly, non-sensitive summary value.
@@ -512,6 +518,17 @@ func (e *TestRunEnv) MetricSnapshots() []MetricSnapshot {
 		out = append(out, snapshot)
 	}
 	return out
+}
+
+// RecordMetricSnapshot records an aggregate metric snapshot.
+func (e *TestRunEnv) RecordMetricSnapshot(snapshot MetricSnapshot) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if snapshot.Count <= 0 {
+		return
+	}
+	snapshot.Labels = cloneLabels(snapshot.Labels)
+	e.metrics[metricSnapshotKey(snapshot.Name, snapshot.Labels)] = snapshot
 }
 
 func metricSnapshotKey(name string, labels Labels) string {

@@ -211,6 +211,45 @@ func TestWriteDirIncludesMetrics(t *testing.T) {
 	}
 }
 
+func TestWriteDirOmitsMissingDurationPercentiles(t *testing.T) {
+	dir := t.TempDir()
+	result := kernel.Result{
+		RunID:  "demo",
+		Status: kernel.StatusCompleted,
+		Units: map[string]kernel.UnitResult{
+			"traffic": {
+				Kind:   "traffic.group_send/v1",
+				Status: kernel.StatusCompleted,
+				Metrics: map[string]kernel.MetricResult{
+					"sendack_latency": {
+						Type:  "duration",
+						Count: 2,
+						Sum:   0.003,
+						Min:   0.001,
+						Max:   0.002,
+					},
+				},
+			},
+		},
+	}
+	if err := report.WriteDir(dir, result); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "summary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdown := string(data)
+	if !strings.Contains(markdown, "metric `sendack_latency` `duration`: count `2`, avg `1.50ms`, min `1.00ms`, max `2.00ms`") {
+		t.Fatalf("summary.md missing aggregate duration metric:\n%s", markdown)
+	}
+	for _, unwanted := range []string{"p95 `0.00ms`", "p99 `0.00ms`"} {
+		if strings.Contains(markdown, unwanted) {
+			t.Fatalf("summary.md includes fake percentile %q:\n%s", unwanted, markdown)
+		}
+	}
+}
+
 func TestWriteDirIncludesArtifactRows(t *testing.T) {
 	dir := t.TempDir()
 	result := kernel.Result{

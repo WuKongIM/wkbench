@@ -274,6 +274,9 @@ func TestStdioClientForwardsRunMetricsToKernelReport(t *testing.T) {
 		math.Abs(duration.Max-0.003) > 0.0000001 {
 		t.Fatalf("duration metric = %#v", duration)
 	}
+	if duration.P95 != 0 || duration.P99 != 0 {
+		t.Fatalf("remote aggregate duration should not publish fake percentiles: %#v", duration)
+	}
 }
 
 func TestStdioClientCanceledHandshakeStopsHungPlugin(t *testing.T) {
