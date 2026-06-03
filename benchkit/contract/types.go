@@ -20,6 +20,49 @@ type Kind string
 // PortType is a versioned capability identifier such as port.channel.group_set/v1.
 type PortType string
 
+// PortBoundary describes whether a port may cross plugin process boundaries.
+type PortBoundary string
+
+const (
+	// PortBoundaryData is a serializable value that may cross plugins.
+	PortBoundaryData PortBoundary = "data"
+	// PortBoundaryStreamCapability is a remote behavior exposed through a stream.
+	PortBoundaryStreamCapability PortBoundary = "stream_capability"
+	// PortBoundaryLocalResource is plugin-local and cannot cross plugins.
+	PortBoundaryLocalResource PortBoundary = "local_resource"
+)
+
+// PortTransport describes how a data port payload is carried.
+type PortTransport string
+
+const (
+	// PortTransportInline carries one bounded payload.
+	PortTransportInline PortTransport = "inline"
+	// PortTransportPaged carries deterministic pages over the plugin stream.
+	PortTransportPaged PortTransport = "paged"
+	// PortTransportArtifactRef points at a host-managed artifact.
+	PortTransportArtifactRef PortTransport = "artifact_ref"
+)
+
+const (
+	// DefaultInlinePortMaxPayloadBytes bounds inline plugin data ports.
+	DefaultInlinePortMaxPayloadBytes int64 = 1 << 20
+	// DefaultReportableOutputMaxBytes bounds reportable output summaries.
+	DefaultReportableOutputMaxBytes int64 = 64 << 10
+)
+
+// PortMeta describes plugin boundary metadata for one input or output port.
+type PortMeta struct {
+	Boundary        PortBoundary
+	Transport       PortTransport
+	Schema          string
+	Encodings       []string
+	MaxPayloadBytes int64
+	Sensitive       bool
+	Reportable      bool
+	Operations      []string
+}
+
 // Labels are metric dimensions emitted by units.
 type Labels map[string]string
 
@@ -49,6 +92,23 @@ type PortDef struct {
 	Type PortType
 	// Optional allows an input port to be omitted.
 	Optional bool
+	// Meta describes plugin boundary behavior for this port.
+	Meta PortMeta
+}
+
+// Metadata returns port metadata with safe defaults applied.
+func (p PortDef) Metadata() PortMeta {
+	meta := p.Meta
+	if meta.Boundary == "" {
+		meta.Boundary = PortBoundaryData
+	}
+	if meta.Transport == "" {
+		meta.Transport = PortTransportInline
+	}
+	if meta.MaxPayloadBytes == 0 {
+		meta.MaxPayloadBytes = DefaultInlinePortMaxPayloadBytes
+	}
+	return meta
 }
 
 // MetricDef describes one metric emitted by a unit.

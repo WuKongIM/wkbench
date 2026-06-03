@@ -12,6 +12,44 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
 
+func TestPortDefDefaultsToInlineDataMetadata(t *testing.T) {
+	port := contract.PortDef{Name: "summary", Type: "port.traffic.summary/v1"}
+	meta := port.Metadata()
+	if meta.Boundary != contract.PortBoundaryData {
+		t.Fatalf("Boundary = %q, want %q", meta.Boundary, contract.PortBoundaryData)
+	}
+	if meta.Transport != contract.PortTransportInline {
+		t.Fatalf("Transport = %q, want %q", meta.Transport, contract.PortTransportInline)
+	}
+	if meta.MaxPayloadBytes != contract.DefaultInlinePortMaxPayloadBytes {
+		t.Fatalf("MaxPayloadBytes = %d, want %d", meta.MaxPayloadBytes, contract.DefaultInlinePortMaxPayloadBytes)
+	}
+	if meta.Sensitive {
+		t.Fatal("Sensitive default must be false")
+	}
+}
+
+func TestPortDefMetadataPreservesExplicitCapability(t *testing.T) {
+	port := contract.PortDef{
+		Name: "sender",
+		Type: "port.wkproto.message_sender/v1",
+		Meta: contract.PortMeta{
+			Boundary:   contract.PortBoundaryStreamCapability,
+			Schema:     "wkbench.ports.wkproto.MessageSenderV1",
+			Encodings:  []string{"protobuf"},
+			Reportable: false,
+			Operations: []string{"OpenSendStream"},
+		},
+	}
+	meta := port.Metadata()
+	if meta.Boundary != contract.PortBoundaryStreamCapability {
+		t.Fatalf("Boundary = %q", meta.Boundary)
+	}
+	if meta.Operations[0] != "OpenSendStream" {
+		t.Fatalf("Operations = %#v", meta.Operations)
+	}
+}
+
 func TestTestRunEnvRecordsDurationObservations(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "traffic", nil, nil)
 	env.ObserveDuration("sendack_latency", 10*time.Millisecond, nil)
