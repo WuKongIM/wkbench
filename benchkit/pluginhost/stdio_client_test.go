@@ -9,13 +9,7 @@ import (
 )
 
 func TestStdioClientListsDemoPluginUnits(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
-	build := exec.Command("go", "build", "-o", bin, "./plugins/demo/cmd/wkbench-demo-plugin")
-	build.Env = append(os.Environ(), "GOWORK=off")
-	build.Dir = repoRoot(t)
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build plugin: %v\n%s", err, out)
-	}
+	bin := buildDemoPlugin(t)
 
 	client, err := StartStdioClient(context.Background(), bin)
 	if err != nil {
@@ -37,6 +31,43 @@ func TestStdioClientListsDemoPluginUnits(t *testing.T) {
 	if len(manifest.Units) != 1 || manifest.Units[0].Kind != "demo.echo/v1" {
 		t.Fatalf("units = %#v", manifest.Units)
 	}
+}
+
+func TestStdioClientHandshakeIgnoresCanceledContext(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	client, err := StartStdioClient(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("close client: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	manifest, err := client.Handshake(ctx)
+	if err != nil {
+		t.Fatalf("handshake with canceled context: %v", err)
+	}
+	if manifest.Name != "wkbench.demo" {
+		t.Fatalf("Name = %q", manifest.Name)
+	}
+}
+
+func buildDemoPlugin(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
+	build := exec.Command("go", "build", "-o", bin, "./plugins/demo/cmd/wkbench-demo-plugin")
+	build.Env = append(os.Environ(), "GOWORK=off")
+	build.Dir = repoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build plugin: %v\n%s", err, out)
+	}
+	return bin
 }
 
 func repoRoot(t *testing.T) string {

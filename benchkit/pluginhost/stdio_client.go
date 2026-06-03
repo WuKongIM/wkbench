@@ -19,8 +19,8 @@ type StdioClient struct {
 
 	reader *protocol.FrameReader
 	writer *protocol.FrameWriter
-	done   chan error
 
+	ioMu      sync.Mutex
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -45,19 +45,16 @@ func StartStdioClient(ctx context.Context, path string) (*StdioClient, error) {
 		stdin:  stdin,
 		reader: protocol.NewFrameReader(stdout, 16<<20),
 		writer: protocol.NewFrameWriter(stdin),
-		done:   make(chan error, 1),
 	}
-	go func() {
-		client.done <- cmd.Wait()
-	}()
 	return client, nil
 }
 
 func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
+	_ = ctx
 	const requestID = "handshake"
-	if err := ctx.Err(); err != nil {
-		return Plugin{}, err
-	}
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+
 	if err := c.writer.WriteFrame(&protocol.Frame{
 		RequestId: requestID,
 		Body: &protocol.Frame_HandshakeRequest{HandshakeRequest: &protocol.HandshakeRequest{
@@ -69,7 +66,7 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		return Plugin{}, fmt.Errorf("write handshake request: %w", err)
 	}
 
-	frame, err := c.readFrame(ctx)
+	frame, err := c.reader.ReadFrame()
 	if err != nil {
 		return Plugin{}, fmt.Errorf("read handshake response: %w", err)
 	}
@@ -99,9 +96,16 @@ func (c *StdioClient) Close() error {
 
 func (c *StdioClient) close() error {
 	_ = c.stdin.Close()
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.cmd.Wait()
+	}()
 
 	select {
-	case err := <-c.done:
+	case err := <-done:
 		if err != nil {
 			return fmt.Errorf("wait plugin: %w", err)
 		}
@@ -110,30 +114,11 @@ func (c *StdioClient) close() error {
 		if c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
 		}
-		err := <-c.done
+		err := <-done
 		if err != nil {
 			return fmt.Errorf("plugin did not exit after stdin close: %w", err)
 		}
 		return fmt.Errorf("plugin did not exit after stdin close")
-	}
-}
-
-func (c *StdioClient) readFrame(ctx context.Context) (*protocol.Frame, error) {
-	type result struct {
-		frame *protocol.Frame
-		err   error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		frame, err := c.reader.ReadFrame()
-		ch <- result{frame: frame, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case result := <-ch:
-		return result.frame, result.err
 	}
 }
 
