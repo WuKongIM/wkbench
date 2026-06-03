@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 )
@@ -152,6 +154,31 @@ func TestListUnitsIncludesExternalPlugin(t *testing.T) {
 	}
 }
 
+func TestListUnitsClosesExternalPluginClient(t *testing.T) {
+	bin, closedPath := buildTrackingDemoPlugin(t)
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "list-units"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	waitForFile(t, closedPath)
+}
+
+func TestPluginRegistrationFailureClosesStartedClients(t *testing.T) {
+	firstBin, firstClosed := buildTrackingDemoPlugin(t)
+	secondBin, secondClosed := buildTrackingDemoPlugin(t)
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", firstBin, "-plugin", secondBin, "list-units"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "registration failed") {
+		t.Fatalf("stderr missing registration failure:\n%s", stderr.String())
+	}
+	waitForFile(t, firstClosed)
+	waitForFile(t, secondClosed)
+}
+
 func buildDemoPlugin(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
@@ -162,6 +189,57 @@ func buildDemoPlugin(t *testing.T) string {
 		t.Fatalf("build demo plugin: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func buildTrackingDemoPlugin(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	closedPath := filepath.Join(dir, "closed")
+	sourcePath := filepath.Join(dir, "main.go")
+	source := fmt.Sprintf(`package main
+
+import (
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	"github.com/WuKongIM/wkbench/plugins/demo/echo"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+func main() {
+	defer os.WriteFile(%q, []byte("closed"), 0o644)
+	if err := wkplugin.Serve(wkplugin.Plugin{
+		Name:    "wkbench.demo.tracking",
+		Version: "0.1.0",
+		Units:   []contract.Unit{echo.Unit{}},
+	}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`, closedPath)
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "wkbench-tracking-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, sourcePath)
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build tracking plugin: %v\n%s", err, out)
+	}
+	return bin, closedPath
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func TestValidateCommandAcceptsMetricsCollectorScenario(t *testing.T) {

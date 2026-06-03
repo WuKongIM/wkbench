@@ -81,9 +81,11 @@ func runWithStderr(args []string, stderr io.Writer) int {
 		return code
 	}
 	reg := defaultRegistry()
-	if code := loadExternalPlugins(reg, cfg.Plugins, stderr); code != exitOK {
+	clients, code := loadExternalPlugins(reg, cfg.Plugins, stderr)
+	if code != exitOK {
 		return code
 	}
+	defer closePluginClients(clients, stderr)
 	switch cfg.Command {
 	case "list-units":
 		return runListUnits(reg, stderr)
@@ -121,27 +123,40 @@ func defaultRegistry() *registry.Registry {
 	return reg
 }
 
-func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Writer) int {
+func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Writer) ([]*pluginhost.StdioClient, int) {
+	var clients []*pluginhost.StdioClient
 	for _, path := range paths {
 		client, err := pluginhost.StartStdioClient(context.Background(), path)
 		if err != nil {
 			fmt.Fprintf(stderr, "plugin %s failed to start: %v\n", path, err)
-			return exitConfig
+			closePluginClients(clients, stderr)
+			return nil, exitConfig
 		}
+		clients = append(clients, client)
 		manifest, err := client.Handshake(context.Background())
 		if err != nil {
 			fmt.Fprintf(stderr, "plugin %s handshake failed: %v\n", path, err)
-			return exitConfig
+			closePluginClients(clients, stderr)
+			return nil, exitConfig
 		}
 		remoteClient := pendingLifecycleClient{client: client}
 		for _, unit := range manifest.Units {
 			if err := reg.Register(pluginhost.NewRemoteUnit(remoteClient, unit)); err != nil {
 				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", path, err)
-				return exitConfig
+				closePluginClients(clients, stderr)
+				return nil, exitConfig
 			}
 		}
 	}
-	return exitOK
+	return clients, exitOK
+}
+
+func closePluginClients(clients []*pluginhost.StdioClient, stderr io.Writer) {
+	for i := len(clients) - 1; i >= 0; i-- {
+		if err := clients[i].Close(); err != nil {
+			fmt.Fprintf(stderr, "plugin close failed: %v\n", err)
+		}
+	}
 }
 
 type pendingLifecycleClient struct {
