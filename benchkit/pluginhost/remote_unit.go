@@ -54,6 +54,10 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
+	inputs, err := collectInputs(u.unit.Definition().Inputs, env)
+	if err != nil {
+		return err
+	}
 	return u.client.Run(ctx, RunRequest{
 		UnitRequest: UnitRequest{
 			PluginName:        u.unit.PluginName,
@@ -64,7 +68,23 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 			WorkerCount:       env.WorkerCount(),
 			SpecJSON:          spec,
 		},
+		Inputs: inputs,
 	}, env)
+}
+
+func collectInputs(defs []contract.PortDef, env contract.RunEnv) (map[string]any, error) {
+	inputs := make(map[string]any, len(defs))
+	for _, def := range defs {
+		value, err := env.Input(def.Name)
+		if err != nil {
+			if def.Optional {
+				continue
+			}
+			return nil, err
+		}
+		inputs[def.Name] = value
+	}
+	return inputs, nil
 }
 
 func encodeSpec(env contract.ValidateEnv) ([]byte, error) {
