@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -93,6 +94,24 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	}
 	if result["message"] != "hello from stdio" {
 		t.Fatalf("result message = %#v", result["message"])
+	}
+}
+
+func TestRemoteReportableOutputReportsAndMarshalsWrappedValue(t *testing.T) {
+	output := remoteReportableOutput{value: map[string]any{"message": "hello"}}
+	reported, ok := output.ReportOutput().(map[string]any)
+	if !ok {
+		t.Fatalf("report output type = %T, want map[string]any", output.ReportOutput())
+	}
+	if reported["message"] != "hello" {
+		t.Fatalf("reported message = %#v", reported["message"])
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+	if string(data) != `{"message":"hello"}` {
+		t.Fatalf("json = %s", data)
 	}
 }
 

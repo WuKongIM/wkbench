@@ -889,7 +889,14 @@ func (e *runEnv) Input(name string) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("input %q is not wired", name)
 	}
-	return e.outputs.get(ref.unit, ref.port)
+	value, err := e.outputs.get(ref.unit, ref.port)
+	if err != nil {
+		return nil, err
+	}
+	if wrapper, ok := value.(contract.OutputWrapper); ok {
+		return wrapper.OutputValue(), nil
+	}
+	return value, nil
 }
 
 func (e *runEnv) SetOutput(name string, value any) error {

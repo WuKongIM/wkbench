@@ -245,6 +245,37 @@ func TestEngineRecordsReportableOutputs(t *testing.T) {
 	}
 }
 
+func TestEngineUnwrapsReportableOutputsForInputs(t *testing.T) {
+	reg := registry.New()
+	reg.MustRegister(wrappedReportableSourceUnit{})
+	reg.MustRegister(wrappedReportableSinkUnit{})
+
+	result, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "reportable-input"},
+		Units: map[string]dsl.UnitNode{
+			"source": {Use: "test.wrapped_reportable_source"},
+			"sink": {
+				Use: "test.wrapped_reportable_sink",
+				Inputs: map[string]string{
+					"value": "source.value",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	sourceOutput := result.Units["source"].Outputs["value"]
+	reported, ok := sourceOutput.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("source output value = %T, want map[string]any", sourceOutput.Value)
+	}
+	if reported["message"] != "visible-value" {
+		t.Fatalf("source report value = %#v", reported)
+	}
+}
+
 func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(metricsUnit{})
@@ -1428,6 +1459,70 @@ func (reportableSourceUnit) Run(ctx context.Context, env contract.RunEnv) error 
 type reportableValue string
 
 func (v reportableValue) ReportOutput() any { return string(v) }
+
+type wrappedReportableSourceUnit struct{}
+
+func (wrappedReportableSourceUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.wrapped_reportable_source/v1",
+		Outputs: []contract.PortDef{
+			{Name: "value", Type: testValuePort},
+		},
+	}
+}
+
+func (wrappedReportableSourceUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (wrappedReportableSourceUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (wrappedReportableSourceUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	return env.SetOutput("value", wrappedReportableValue{value: map[string]any{"message": "visible-value"}})
+}
+
+type wrappedReportableValue struct {
+	value any
+}
+
+func (v wrappedReportableValue) ReportOutput() any { return v.value }
+func (v wrappedReportableValue) OutputValue() any  { return v.value }
+
+type wrappedReportableSinkUnit struct{}
+
+func (wrappedReportableSinkUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.wrapped_reportable_sink/v1",
+		Inputs: []contract.PortDef{
+			{Name: "value", Type: testValuePort},
+		},
+	}
+}
+
+func (wrappedReportableSinkUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (wrappedReportableSinkUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (wrappedReportableSinkUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	input, err := env.Input("value")
+	if err != nil {
+		return err
+	}
+	value, ok := input.(map[string]any)
+	if !ok {
+		return fmt.Errorf("input value type = %T, want map[string]any", input)
+	}
+	if value["message"] != "visible-value" {
+		return fmt.Errorf("input value = %#v", value)
+	}
+	return nil
+}
 
 type metricsUnit struct{}
 

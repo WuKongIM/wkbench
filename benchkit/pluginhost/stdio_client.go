@@ -360,6 +360,14 @@ func (o remoteReportableOutput) ReportOutput() any {
 	return o.value
 }
 
+func (o remoteReportableOutput) OutputValue() any {
+	return o.value
+}
+
+func (o remoteReportableOutput) MarshalJSON() ([]byte, error) {
+	return json.Marshal(o.value)
+}
+
 func pluginRPCError(err *protocol.Error) error {
 	if err == nil {
 		return fmt.Errorf("plugin error")

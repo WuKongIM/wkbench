@@ -208,6 +208,13 @@ type ReportableOutput interface {
 	ReportOutput() any
 }
 
+// OutputWrapper is implemented by stored output decorators that should expose
+// their raw value to downstream graph inputs.
+type OutputWrapper interface {
+	// OutputValue returns the unit-facing value represented by this output.
+	OutputValue() any
+}
+
 // CloseableOutput is implemented by output values that own runtime resources.
 type CloseableOutput interface {
 	// Close releases runtime resources owned by the output value.
