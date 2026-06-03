@@ -128,6 +128,32 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-official-data-plugin valida
 It is merged with `.wkbench/plugins.yaml`; duplicate executable paths are
 loaded once.
 
+## Bundled Official Plugins
+
+`list-units`, `validate`, `explain`, `plan`, and `run` start bundled official
+plugins by default. They use the same stdio RPC path as third-party plugins.
+The default official plugins currently expose data and control-plane units:
+
+- `wkbench.official.core`: `core.static_groups/v1`
+- `wkbench.official.identity`: `identity.pool/v1`,
+  `identity.person_pairs/v1`
+- `wkbench.official.wukongim`: `wukongim.target/v1`,
+  `wukongim.prepare_group_channels/v1`
+- `wkbench.official.report`: `report.assert/v1`
+
+The host still keeps local units whose ports are Go capabilities, local
+resources, or background lifecycles: fake senders, traffic generators,
+`wkproto.session_pool/v1`, `wukongim.prepare_tokens/v1`, and
+`wukongim.metrics_collector/v1`. These need richer RPC support before they can
+move safely.
+
+Use `-no-official-plugins` before the command to inspect or run only the
+host-local registry:
+
+```bash
+GOWORK=off go run ./cmd/wkbench -no-official-plugins list-units
+```
+
 ## Project Plugin Config
 
 `wkbench` discovers project plugin config by walking upward from the current
@@ -225,5 +251,7 @@ remote metrics.
   transported in Phase 1.
 - Outputs crossing the process boundary are JSON inline values.
 - Large samples belong in artifacts, not inline outputs.
-- Official units still exist in-process during migration. The final
-  architecture will remove direct host registration later.
+- Official data and control-plane units now run as bundled plugins by default.
+  Capability ports, local resources, token-source interfaces, and background
+  units remain host-local until the protocol has explicit support for those
+  contracts.

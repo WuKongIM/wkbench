@@ -18,17 +18,11 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/scaffold"
 	fakegroupsender "github.com/WuKongIM/wkbench/units/core/fake_group_sender"
 	fakemessagesender "github.com/WuKongIM/wkbench/units/core/fake_message_sender"
-	staticgroups "github.com/WuKongIM/wkbench/units/core/static_groups"
-	personpairs "github.com/WuKongIM/wkbench/units/identity/person_pairs"
-	identitypool "github.com/WuKongIM/wkbench/units/identity/pool"
-	assertunit "github.com/WuKongIM/wkbench/units/report/assert"
 	groupsend "github.com/WuKongIM/wkbench/units/traffic/group_send"
 	sendtraffic "github.com/WuKongIM/wkbench/units/traffic/send"
 	sessionpool "github.com/WuKongIM/wkbench/units/wkproto/session_pool"
 	metricscollector "github.com/WuKongIM/wkbench/units/wukongim/metrics_collector"
-	preparegroups "github.com/WuKongIM/wkbench/units/wukongim/prepare_group_channels"
 	preparetokens "github.com/WuKongIM/wkbench/units/wukongim/prepare_tokens"
-	wukongtarget "github.com/WuKongIM/wkbench/units/wukongim/target"
 )
 
 const (
@@ -43,9 +37,10 @@ func main() {
 }
 
 type cliConfig struct {
-	Plugins []string
-	Command string
-	Args    []string
+	Plugins           []string
+	NoOfficialPlugins bool
+	Command           string
+	Args              []string
 }
 
 func parseGlobalArgs(args []string, stderr io.Writer) (cliConfig, int) {
@@ -53,15 +48,16 @@ func parseGlobalArgs(args []string, stderr io.Writer) (cliConfig, int) {
 	fs.SetOutput(stderr)
 	var plugins multiString
 	fs.Var(&plugins, "plugin", "external wkbench plugin executable; may be repeated")
+	noOfficialPlugins := fs.Bool("no-official-plugins", false, "disable bundled official wkbench plugins")
 	if err := fs.Parse(args); err != nil {
 		return cliConfig{}, exitConfig
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench [-plugin path] <list-units|plugin|new-unit|explain|plan|validate|run>")
+		fmt.Fprintln(stderr, "usage: wkbench [-plugin path] [-no-official-plugins] <list-units|plugin|new-unit|explain|plan|validate|run>")
 		return cliConfig{}, exitConfig
 	}
-	return cliConfig{Plugins: plugins, Command: rest[0], Args: rest[1:]}, exitOK
+	return cliConfig{Plugins: plugins, NoOfficialPlugins: *noOfficialPlugins, Command: rest[0], Args: rest[1:]}, exitOK
 }
 
 type multiString []string
@@ -80,6 +76,9 @@ func runWithStderr(args []string, stderr io.Writer) int {
 	if code != exitOK {
 		return code
 	}
+	if cfg.Command == officialPluginCommand {
+		return runOfficialPluginServe(cfg.Args, os.Stdin, os.Stdout, stderr)
+	}
 	if cfg.Command == "plugin" {
 		return runPluginCommand(cfg.Args, stderr)
 	}
@@ -87,14 +86,30 @@ func runWithStderr(args []string, stderr io.Writer) int {
 		return runNewUnit(cfg.Args, stderr)
 	}
 	reg := defaultRegistry()
+	var clients []*pluginhost.StdioClient
+	if !cfg.NoOfficialPlugins {
+		officialSpecs, err := defaultOfficialPluginSpecs()
+		if err != nil {
+			fmt.Fprintf(stderr, "official plugin config failed: %v\n", err)
+			return exitConfig
+		}
+		officialClients, code := loadExternalPlugins(reg, officialSpecs, stderr)
+		if code != exitOK {
+			return code
+		}
+		clients = append(clients, officialClients...)
+	}
 	pluginPaths, code := loadConfiguredPluginPaths(cfg.Plugins, stderr)
 	if code != exitOK {
+		closePluginClients(clients, stderr)
 		return code
 	}
-	clients, code := loadExternalPlugins(reg, pluginPaths, stderr)
+	pluginClients, code := loadExternalPlugins(reg, pluginPathSpecs(pluginPaths), stderr)
 	if code != exitOK {
+		closePluginClients(clients, stderr)
 		return code
 	}
+	clients = append(clients, pluginClients...)
 	defer closePluginClients(clients, stderr)
 	switch cfg.Command {
 	case "list-units":
@@ -115,48 +130,64 @@ func runWithStderr(args []string, stderr io.Writer) int {
 
 func defaultRegistry() *registry.Registry {
 	reg := registry.New()
-	staticgroups.Register(reg)
 	fakegroupsender.Register(reg)
 	fakemessagesender.Register(reg)
-	identitypool.Register(reg)
-	personpairs.Register(reg)
-	wukongtarget.Register(reg)
 	metricscollector.Register(reg)
 	preparetokens.Register(reg)
-	preparegroups.Register(reg)
 	sessionpool.Register(reg)
 	reg.MustRegister(groupsend.Unit{})
 	sendtraffic.Register(reg)
-	assertunit.Register(reg)
 	return reg
 }
 
-func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Writer) ([]*pluginhost.StdioClient, int) {
+type pluginCommandSpec struct {
+	Label string
+	Path  string
+	Args  []string
+}
+
+func pluginPathSpecs(paths []string) []pluginCommandSpec {
+	specs := make([]pluginCommandSpec, 0, len(paths))
+	for _, path := range paths {
+		specs = append(specs, pluginCommandSpec{Path: path})
+	}
+	return specs
+}
+
+func (s pluginCommandSpec) display() string {
+	if s.Label != "" {
+		return s.Label
+	}
+	return s.Path
+}
+
+func loadExternalPlugins(reg *registry.Registry, specs []pluginCommandSpec, stderr io.Writer) ([]*pluginhost.StdioClient, int) {
 	type loadedPlugin struct {
-		path     string
+		label    string
 		client   *pluginhost.StdioClient
 		manifest pluginhost.Plugin
 	}
 	var clients []*pluginhost.StdioClient
 	var loaded []loadedPlugin
 	bareKindCounts := make(map[string]int)
-	for _, path := range paths {
-		client, err := pluginhost.StartStdioClient(context.Background(), path)
+	for _, spec := range specs {
+		label := spec.display()
+		client, err := pluginhost.StartStdioCommand(context.Background(), pluginhost.StdioCommand{Path: spec.Path, Args: spec.Args})
 		if err != nil {
-			fmt.Fprintf(stderr, "plugin %s failed to start: %v\n", path, err)
+			fmt.Fprintf(stderr, "plugin %s failed to start: %v\n", label, err)
 			closePluginClients(clients, stderr)
 			return nil, exitConfig
 		}
 		clients = append(clients, client)
 		manifest, err := client.Handshake(context.Background())
 		if err != nil {
-			fmt.Fprintf(stderr, "plugin %s handshake failed: %v\n", path, err)
+			fmt.Fprintf(stderr, "plugin %s handshake failed: %v\n", label, err)
 			closePluginClients(clients, stderr)
 			return nil, exitConfig
 		}
-		loaded = append(loaded, loadedPlugin{path: path, client: client, manifest: manifest})
+		loaded = append(loaded, loadedPlugin{label: label, client: client, manifest: manifest})
 		if loaded[len(loaded)-1].manifest.Source == "" {
-			loaded[len(loaded)-1].manifest.Source = path
+			loaded[len(loaded)-1].manifest.Source = label
 		}
 		for _, unit := range manifest.Units {
 			bareKindCounts[unit.Kind]++
@@ -167,7 +198,7 @@ func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Write
 		for _, unit := range plugin.manifest.Units {
 			qualifiedKind := plugin.manifest.Name + ":" + unit.Kind
 			if err := reg.Register(pluginhost.NewRemoteUnitAlias(remoteClient, unit, qualifiedKind)); err != nil {
-				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", plugin.path, err)
+				fmt.Fprintf(stderr, "plugin %s registration failed: %v\n", plugin.label, err)
 				closePluginClients(clients, stderr)
 				return nil, exitConfig
 			}

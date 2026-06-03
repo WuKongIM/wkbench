@@ -36,6 +36,14 @@ List built-in units:
 GOWORK=off go run ./cmd/wkbench list-units
 ```
 
+`wkbench` loads bundled official plugins by default for data and control-plane
+units. Use `-no-official-plugins` before the command when you need to inspect
+only the host-local capability/background units:
+
+```bash
+GOWORK=off go run ./cmd/wkbench -no-official-plugins list-units
+```
+
 ## External Plugins
 
 External plugins are standalone executables. Generate a starter plugin, build
@@ -66,10 +74,10 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin run -scenario .
 
 Scenario YAML can reference external units as `<plugin-name>:<kind>`, for
 example `wkbench.demo:demo.echo/v1`. `list-units`, `validate`, `explain`,
-`plan`, and `run` automatically load enabled project plugins. During Phase 1,
-official units still run in-process while external plugin units are registered
-as remote proxies. The final architecture will remove direct unit registration
-from the host binary after migration. See
+`plan`, and `run` automatically load bundled official plugins and enabled
+project plugins. Official data and control-plane units use the same stdio RPC
+path as third-party plugins by default; host-local units remain for capability
+ports, local resources, and background lifecycle support. See
 [docs/plugin-authoring.md](docs/plugin-authoring.md) for authoring details,
 plugin config, and Phase 1 limits.
 
@@ -86,20 +94,27 @@ Run tests:
 GOWORK=off go test ./...
 ```
 
-## Current Built-In Units
+## Current Units
+
+Bundled official plugins provide these data/control-plane units by default:
 
 - `core.static_groups/v1`: produces deterministic in-memory group channels.
-- `core.fake_group_sender/v1`: produces a fake WKProto group sender for examples and tests.
-- `core.fake_message_sender/v1`: produces a fake generic WKProto message sender for dry-run examples and tests.
 - `identity.pool/v1`: produces deterministic user/device identities.
 - `identity.person_pairs/v1`: produces deterministic person-channel send targets.
 - `wukongim.target/v1`: describes and probes black-box WuKongIM endpoints.
-- `wukongim.prepare_tokens/v1`: prepares user tokens through `/bench/v1/users/tokens`.
 - `wukongim.prepare_group_channels/v1`: prepares group channels and subscribers through `/bench/v1`.
+- `report.assert/v1`: asserts traffic summary values.
+
+The host keeps these local until plugin RPC supports capability ports,
+token-source interfaces, local resources, and background lifecycles:
+
+- `core.fake_group_sender/v1`: produces a fake WKProto group sender for examples and tests.
+- `core.fake_message_sender/v1`: produces a fake generic WKProto message sender for dry-run examples and tests.
+- `wukongim.prepare_tokens/v1`: prepares user tokens through `/bench/v1/users/tokens`.
 - `wkproto.session_pool/v1`: opens real WKProto sessions and provides legacy `port.wkproto.group_sender/v1` senders plus generic `port.wkproto.message_sender/v1` senders for `traffic.send/v1`.
 - `traffic.group_send/v1`: sends group messages through `port.wkproto.group_sender/v1`.
 - `traffic.send/v1`: sends protocol messages through `port.wkproto.message_sender/v1` and measures `SEND -> SENDACK` latency.
-- `report.assert/v1`: asserts traffic summary values.
+- `wukongim.metrics_collector/v1`: scrapes target metrics as a background unit.
 
 Validate the real WuKongIM example without connecting:
 
@@ -183,6 +198,7 @@ For an end-to-end local run that starts and stops the three-node target:
 - `benchkit/contract` defines the stable Unit API.
 - `benchkit/ports/*` defines shared capability contracts.
 - `benchkit/kernel` validates graph wiring, auto-connects unique matching ports, plans, and runs units.
-- `cmd/wkbench` registers the built-in distribution.
+- `cmd/wkbench` assembles the distribution by loading bundled official plugins
+  and registering host-local runtime units.
 
 See [docs/design/wkbench-v2-unit-architecture.md](docs/design/wkbench-v2-unit-architecture.md) and [docs/unit-standard.md](docs/unit-standard.md).

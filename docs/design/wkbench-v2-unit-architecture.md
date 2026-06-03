@@ -25,6 +25,8 @@ benchkit/kernel/          graph validation, planning, execution, result model
 benchkit/ports/           versioned capability ports shared by units
 benchkit/registry/        unit registry and kind resolution
 benchkit/report/          report directory writer
+plugins/official/         bundled official plugin executables
+plugins/demo/             demo external plugin
 units/core/               generic demo/core units
 units/traffic/            traffic generators
 units/report/             assertion and report-helper units
@@ -37,7 +39,9 @@ docs/                     design and authoring documentation
 ```text
 cmd/wkbench
   -> benchkit/kernel
-  -> built-in unit packages for registration
+  -> benchkit/pluginhost
+  -> bundled official plugin packages for sidecar serving
+  -> host-local runtime unit packages for registration
 
 benchkit/kernel
   -> benchkit/contract
@@ -53,6 +57,13 @@ benchkit/contract
 ```
 
 `benchkit/kernel` must not import `units/*`. The CLI assembles a distribution by registering the units it wants to ship.
+
+The default distribution registers host-local runtime units that still require
+Go capability ports, local resources, token-source interfaces, or background
+lifecycles, and loads bundled official plugins for data and control-plane
+units. Those kind sets are intentionally disjoint. Scenario composition does
+not change: YAML refers to unit kinds and port names, while the host decides
+whether the implementation is remote or local.
 
 ## Scenario DSL
 

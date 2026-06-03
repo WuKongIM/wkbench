@@ -14,6 +14,26 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/kernel"
 )
 
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "wkbench-official-plugins-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create official plugin temp dir: %v\n", err)
+		os.Exit(1)
+	}
+	specs, err := buildOfficialPluginSpecsForTest(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build official plugin binaries: %v\n", err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	officialPluginSpecsForTest = func() ([]pluginCommandSpec, error) {
+		return specs, nil
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func TestRunCommandExecutesScenarioAndWritesReport(t *testing.T) {
 	dir := t.TempDir()
 	scenarioPath := filepath.Join(dir, "scenario.yaml")
@@ -126,19 +146,58 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 	}
 	out := stderr.String()
 	for _, want := range []string{
+		"core.static_groups/v1",
 		"core.fake_message_sender/v1",
 		"identity.pool/v1",
 		"identity.person_pairs/v1",
+		"report.assert/v1",
 		"traffic.send/v1",
 		"wukongim.target/v1",
 		"wukongim.metrics_collector/v1",
 		"wukongim.prepare_tokens/v1",
 		"wukongim.prepare_group_channels/v1",
+		"wkbench.official.core:core.static_groups/v1",
+		"wkbench.official.identity:identity.pool/v1",
+		"wkbench.official.report:report.assert/v1",
+		"wkbench.official.wukongim:wukongim.target/v1",
 		"wkproto.session_pool/v1",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected list-units to include %s, got:\n%s", want, out)
+		requireOutputLine(t, out, want)
+	}
+}
+
+func TestNoOfficialPluginsKeepsOnlyHostLocalUnits(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-no-official-plugins", "list-units"}, &stderr)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{
+		"core.fake_group_sender/v1",
+		"core.fake_message_sender/v1",
+		"traffic.group_send/v1",
+		"traffic.send/v1",
+		"wkproto.session_pool/v1",
+		"wukongim.metrics_collector/v1",
+		"wukongim.prepare_tokens/v1",
+	} {
+		requireOutputLine(t, out, want)
+	}
+	for _, absent := range []string{
+		"core.static_groups/v1",
+		"identity.pool/v1",
+		"identity.person_pairs/v1",
+		"report.assert/v1",
+		"wukongim.target/v1",
+		"wukongim.prepare_group_channels/v1",
+	} {
+		if outputHasLine(out, absent) {
+			t.Fatalf("expected %s to be absent with official plugins disabled, got:\n%s", absent, out)
 		}
+	}
+	if strings.Contains(out, "wkbench.official.") {
+		t.Fatalf("expected qualified official units to be absent with official plugins disabled, got:\n%s", out)
 	}
 }
 
@@ -368,6 +427,81 @@ units:
 	}
 	waitForFile(t, firstClosed)
 	waitForFile(t, secondClosed)
+}
+
+func TestDefaultOfficialBareKindSurvivesUserPluginDuplicate(t *testing.T) {
+	bin, closed := buildNamedStaticGroupsPlugin(t, "wkbench.acme.static")
+	var listStderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "list-units"}, &listStderr)
+	if code != exitOK {
+		t.Fatalf("list-units code = %d, stderr:\n%s", code, listStderr.String())
+	}
+	requireOutputLine(t, listStderr.String(), "core.static_groups/v1")
+	requireOutputLine(t, listStderr.String(), "wkbench.official.core:core.static_groups/v1")
+	requireOutputLine(t, listStderr.String(), "wkbench.acme.static:core.static_groups/v1")
+	waitForFile(t, closed)
+
+	bin, closed = buildNamedStaticGroupsPlugin(t, "wkbench.acme.static")
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: official-bare-wins
+  duration: 1s
+units:
+  groups:
+    use: core.static_groups/v1
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    inputs:
+      channels: groups.groups
+      sender: sender.sender
+    spec:
+      rate: 1/s
+      payload_size: 8
+`)
+
+	var stderr bytes.Buffer
+	code = runWithStderr([]string{"-plugin", bin, "validate", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	waitForFile(t, closed)
+
+	bin, closed = buildNamedStaticGroupsPlugin(t, "wkbench.acme.static")
+	qualifiedScenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: user-qualified-still-works
+  duration: 1s
+units:
+  groups:
+    use: wkbench.acme.static:core.static_groups/v1
+    spec:
+      count: 1
+      members_per_channel: 2
+  sender:
+    use: core.fake_group_sender
+  traffic:
+    use: traffic.group_send
+    inputs:
+      channels: groups.groups
+      sender: sender.sender
+    spec:
+      rate: 1/s
+      payload_size: 8
+`)
+
+	stderr.Reset()
+	code = runWithStderr([]string{"-plugin", bin, "validate", "-scenario", qualifiedScenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("qualified code = %d, stderr:\n%s", code, stderr.String())
+	}
+	waitForFile(t, closed)
 }
 
 func TestValidateLoadsPluginsFromProjectConfig(t *testing.T) {
@@ -700,6 +834,31 @@ func buildOfficialDataPlugin(t *testing.T) string {
 	return bin
 }
 
+func buildOfficialPluginSpecsForTest(dir string) ([]pluginCommandSpec, error) {
+	plugins := []struct {
+		name string
+		pkg  string
+		bin  string
+	}{
+		{name: "wkbench.official.core", pkg: "./plugins/official/core/cmd/wkbench-official-core-plugin", bin: "wkbench-official-core-plugin"},
+		{name: "wkbench.official.identity", pkg: "./plugins/official/identity/cmd/wkbench-official-identity-plugin", bin: "wkbench-official-identity-plugin"},
+		{name: "wkbench.official.wukongim", pkg: "./plugins/official/wukongim/cmd/wkbench-official-wukongim-plugin", bin: "wkbench-official-wukongim-plugin"},
+		{name: "wkbench.official.report", pkg: "./plugins/official/report/cmd/wkbench-official-report-plugin", bin: "wkbench-official-report-plugin"},
+	}
+	specs := make([]pluginCommandSpec, 0, len(plugins))
+	for _, plugin := range plugins {
+		bin := filepath.Join(dir, plugin.bin)
+		cmd := exec.Command("go", "build", "-o", bin, plugin.pkg)
+		cmd.Dir = "../.."
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("%s: %w\n%s", plugin.name, err, out)
+		}
+		specs = append(specs, pluginCommandSpec{Label: plugin.name, Path: bin})
+	}
+	return specs, nil
+}
+
 func buildTrackingDemoPlugin(t *testing.T) (string, string) {
 	t.Helper()
 	return buildNamedTrackingDemoPlugin(t, "wkbench.demo.tracking")
@@ -740,6 +899,45 @@ func main() {
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build tracking plugin: %v\n%s", err, out)
+	}
+	return bin, closedPath
+}
+
+func buildNamedStaticGroupsPlugin(t *testing.T, pluginName string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	closedPath := filepath.Join(dir, "closed")
+	sourcePath := filepath.Join(dir, "main.go")
+	source := fmt.Sprintf(`package main
+
+import (
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	staticgroups "github.com/WuKongIM/wkbench/units/core/static_groups"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+func main() {
+	defer os.WriteFile(%q, []byte("closed"), 0o644)
+	if err := wkplugin.Serve(wkplugin.Plugin{
+		Name:    %q,
+		Version: "0.1.0",
+		Units:   []contract.Unit{staticgroups.Unit{}},
+	}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`, closedPath, pluginName)
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "wkbench-static-groups-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, sourcePath)
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build static groups plugin: %v\n%s", err, out)
 	}
 	return bin, closedPath
 }
@@ -868,6 +1066,28 @@ units:
 	code := runWithStderr([]string{"validate", "-scenario", scenarioPath}, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+}
+
+func TestExampleScenariosValidateExplainPlanWithDefaultOfficialPlugins(t *testing.T) {
+	root := repoRoot(t)
+	scenarios := []string{
+		"examples/group-send.yaml",
+		"examples/wukongim-group-send.yaml",
+		"examples/wukongim-send-rate-mixed.yaml",
+		"examples/wukongim-send-rate-with-metrics.yaml",
+		"examples/wukongim-three-node-send-rate-mixed.yaml",
+	}
+	for _, scenario := range scenarios {
+		for _, command := range []string{"validate", "explain", "plan"} {
+			t.Run(command+"/"+scenario, func(t *testing.T) {
+				var stderr bytes.Buffer
+				code := runWithStderr([]string{command, "-scenario", filepath.Join(root, scenario)}, &stderr)
+				if code != exitOK {
+					t.Fatalf("%s %s code = %d, stderr:\n%s", command, scenario, code, stderr.String())
+				}
+			})
+		}
 	}
 }
 
@@ -1124,6 +1344,22 @@ func writeScenarioFile(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return scenarioPath
+}
+
+func requireOutputLine(t *testing.T, out, want string) {
+	t.Helper()
+	if !outputHasLine(out, want) {
+		t.Fatalf("expected output line %s, got:\n%s", want, out)
+	}
+}
+
+func outputHasLine(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func runInDirWithStderr(t *testing.T, dir string, args []string, stderr *bytes.Buffer) int {

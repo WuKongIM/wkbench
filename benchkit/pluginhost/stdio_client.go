@@ -40,8 +40,17 @@ type readResult struct {
 	err   error
 }
 
+type StdioCommand struct {
+	Path string
+	Args []string
+}
+
 func StartStdioClient(ctx context.Context, path string) (*StdioClient, error) {
-	cmd := exec.CommandContext(ctx, path)
+	return StartStdioCommand(ctx, StdioCommand{Path: path})
+}
+
+func StartStdioCommand(ctx context.Context, command StdioCommand) (*StdioClient, error) {
+	cmd := exec.CommandContext(ctx, command.Path, command.Args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
