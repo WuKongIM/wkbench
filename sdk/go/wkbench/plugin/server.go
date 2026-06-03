@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"slices"
+
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/pluginhost"
 )
@@ -19,11 +21,20 @@ func ManifestFromUnits(name, version string, units []contract.Unit) pluginhost.P
 			Kind:        def.Kind,
 			Title:       def.Title,
 			Description: def.Description,
-			Inputs:      def.Inputs,
-			Outputs:     def.Outputs,
-			Metrics:     def.Metrics,
-			Artifacts:   def.Artifacts,
+			Inputs:      clonePortDefs(def.Inputs),
+			Outputs:     clonePortDefs(def.Outputs),
+			Metrics:     slices.Clone(def.Metrics),
+			Artifacts:   slices.Clone(def.Artifacts),
 		})
 	}
 	return out
+}
+
+func clonePortDefs(ports []contract.PortDef) []contract.PortDef {
+	ports = slices.Clone(ports)
+	for i := range ports {
+		ports[i].Meta.Encodings = slices.Clone(ports[i].Meta.Encodings)
+		ports[i].Meta.Operations = slices.Clone(ports[i].Meta.Operations)
+	}
+	return ports
 }
