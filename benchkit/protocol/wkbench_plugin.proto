@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package wkbench.plugin.v1;
+
+option go_package = "github.com/WuKongIM/wkbench/benchkit/protocol;protocol";
+
+message Frame {
+  string request_id = 1;
+  string run_id = 2;
+  string unit_instance_id = 3;
+  oneof body {
+    HandshakeRequest handshake_request = 10;
+    HandshakeResponse handshake_response = 11;
+    ListUnitsRequest list_units_request = 12;
+    ListUnitsResponse list_units_response = 13;
+    ValidateRequest validate_request = 14;
+    ValidateResponse validate_response = 15;
+    PlanRequest plan_request = 16;
+    PlanResponse plan_response = 17;
+    RunRequest run_request = 18;
+    RunEnvRequest run_env_request = 19;
+    RunEnvResponse run_env_response = 20;
+    MetricFlush metric_flush = 21;
+    SetOutput set_output = 22;
+    TerminalStatus terminal_status = 23;
+    Error error = 24;
+  }
+}
+
+message HandshakeRequest {
+  string host_protocol = 1;
+  string min_protocol = 2;
+  string max_protocol = 3;
+}
+
+message HandshakeResponse {
+  PluginManifest manifest = 1;
+  string selected_protocol = 2;
+}
+
+message PluginManifest {
+  string name = 1;
+  string version = 2;
+  string protocol = 3;
+  string source = 4;
+  string checksum = 5;
+  repeated UnitDefinition units = 6;
+}
+
+message ListUnitsRequest {}
+
+message ListUnitsResponse {
+  repeated UnitDefinition units = 1;
+}
+
+message UnitDefinition {
+  string kind = 1;
+  string title = 2;
+  string description = 3;
+  repeated PortDef inputs = 4;
+  repeated PortDef outputs = 5;
+  repeated MetricDef metrics = 6;
+  repeated ArtifactDef artifacts = 7;
+}
+
+message PortDef {
+  string name = 1;
+  string type = 2;
+  bool optional = 3;
+  PortMeta meta = 4;
+}
+
+message PortMeta {
+  string boundary = 1;
+  string transport = 2;
+  string schema = 3;
+  repeated string encodings = 4;
+  int64 max_payload_bytes = 5;
+  bool sensitive = 6;
+  bool reportable = 7;
+  repeated string operations = 8;
+}
+
+message MetricDef {
+  string name = 1;
+  string type = 2;
+}
+
+message ArtifactDef {
+  string name = 1;
+  string content_type = 2;
+}
+
+message ValidateRequest {
+  string unit_name = 1;
+  string kind = 2;
+  bytes spec_json = 3;
+}
+
+message ValidateResponse {}
+
+message PlanRequest {
+  string unit_name = 1;
+  string kind = 2;
+  string run_id = 3;
+  int64 run_duration_millis = 4;
+  int32 worker_count = 5;
+  bytes spec_json = 6;
+}
+
+message PlanResponse {
+  bytes plan_json = 1;
+}
+
+message RunRequest {
+  string unit_name = 1;
+  string kind = 2;
+  string run_id = 3;
+  int64 run_duration_millis = 4;
+  int32 worker_count = 5;
+  bytes spec_json = 6;
+  map<string, PortValue> inputs = 7;
+}
+
+message RunEnvRequest {
+  string op = 1;
+  string name = 2;
+  PortValue value = 3;
+}
+
+message RunEnvResponse {
+  string op = 1;
+  string name = 2;
+  PortValue value = 3;
+}
+
+message PortValue {
+  string type = 1;
+  string encoding = 2;
+  string transport = 3;
+  bool sensitive = 4;
+  bool reportable = 5;
+  bytes payload = 6;
+}
+
+message MetricFlush {
+  repeated MetricSnapshot metrics = 1;
+}
+
+message MetricSnapshot {
+  string name = 1;
+  string type = 2;
+  map<string, string> labels = 3;
+  int64 count = 4;
+  double sum = 5;
+  double min = 6;
+  double max = 7;
+}
+
+message SetOutput {
+  string name = 1;
+  PortValue value = 2;
+}
+
+message TerminalStatus {
+  bool ok = 1;
+  Error error = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}
