@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
 )
 
 func TestManifestFromUnitsIncludesPortMetadata(t *testing.T) {
@@ -96,6 +99,90 @@ func TestManifestFromUnitsCopiesDefinitionSlices(t *testing.T) {
 	}
 }
 
+func TestServerPlanAppliesWorkerCount(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{workerCountUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "plan-1",
+		Body: &protocol.Frame_PlanRequest{PlanRequest: &protocol.PlanRequest{
+			UnitName:          "workers",
+			Kind:              "demo.worker_count/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       7,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handlePlan(context.Background(), frame, frame.GetPlanRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle plan: %v", err)
+	}
+
+	response := readServerTestFrame(t, &out)
+	planResponse := response.GetPlanResponse()
+	if planResponse == nil {
+		t.Fatalf("response body = %T, want plan response", response.Body)
+	}
+	var plan contract.Plan
+	if err := json.Unmarshal(planResponse.GetPlanJson(), &plan); err != nil {
+		t.Fatalf("decode plan json: %v", err)
+	}
+	shard, ok := plan.Shards[0].(map[string]any)
+	if !ok {
+		t.Fatalf("plan shard = %#v", plan.Shards[0])
+	}
+	if shard["worker_count"] != float64(7) {
+		t.Fatalf("worker_count = %#v, want 7", shard["worker_count"])
+	}
+}
+
+func TestServerRunAppliesWorkerCount(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{workerCountUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "workers",
+			Kind:              "demo.worker_count/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       9,
+			SpecJson:          []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+
+	outputFrame := readServerTestFrame(t, &out)
+	output := outputFrame.GetSetOutput()
+	if output == nil {
+		t.Fatalf("first response body = %T, want set output", outputFrame.Body)
+	}
+	var workerCount any
+	if err := json.Unmarshal(output.GetValue().GetPayload(), &workerCount); err != nil {
+		t.Fatalf("decode output json: %v", err)
+	}
+	if workerCount != float64(9) {
+		t.Fatalf("worker_count output = %#v, want 9", workerCount)
+	}
+	terminalFrame := readServerTestFrame(t, &out)
+	status := terminalFrame.GetTerminalStatus()
+	if status == nil || !status.GetOk() {
+		t.Fatalf("terminal status = %#v", status)
+	}
+}
+
+func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
+	t.Helper()
+	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	return frame
+}
+
 type echoUnit struct{}
 
 func (echoUnit) Definition() contract.Definition {
@@ -126,3 +213,29 @@ func (u mutableUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.P
 	return contract.Plan{UnitName: env.UnitName()}, nil
 }
 func (mutableUnit) Run(ctx context.Context, env contract.RunEnv) error { return nil }
+
+type workerCountUnit struct{}
+
+func (workerCountUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.worker_count/v1",
+		Outputs: []contract.PortDef{{
+			Name: "worker_count",
+			Type: "port.demo.worker_count/v1",
+		}},
+	}
+}
+func (workerCountUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (workerCountUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{
+		UnitName: env.UnitName(),
+		Shards: []any{map[string]any{
+			"worker_count": env.WorkerCount(),
+		}},
+	}, nil
+}
+func (workerCountUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	return env.SetOutput("worker_count", env.WorkerCount())
+}

@@ -129,6 +129,9 @@ func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *pro
 	}
 	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), nil, spec)
 	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
+	if req.GetWorkerCount() > 0 {
+		env.SetWorkerCount(int(req.GetWorkerCount()))
+	}
 	plan, err := unit.Plan(ctx, env)
 	if err != nil {
 		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
@@ -164,6 +167,9 @@ func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *prot
 	}
 	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), inputs, spec)
 	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
+	if req.GetWorkerCount() > 0 {
+		env.SetWorkerCount(int(req.GetWorkerCount()))
+	}
 	if err := unit.Run(ctx, env); err != nil {
 		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}

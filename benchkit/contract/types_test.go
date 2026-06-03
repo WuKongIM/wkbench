@@ -65,6 +65,21 @@ func TestTestRunEnvRecordsDurationObservations(t *testing.T) {
 	}
 }
 
+func TestTestRunEnvWorkerCountDefaultsToOneAndCanBeSet(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "traffic", nil, nil)
+	if env.WorkerCount() != 1 {
+		t.Fatalf("default WorkerCount = %d, want 1", env.WorkerCount())
+	}
+	env.SetWorkerCount(6)
+	if env.WorkerCount() != 6 {
+		t.Fatalf("WorkerCount = %d, want 6", env.WorkerCount())
+	}
+	env.SetWorkerCount(0)
+	if env.WorkerCount() != 1 {
+		t.Fatalf("non-positive WorkerCount = %d, want 1", env.WorkerCount())
+	}
+}
+
 func TestTestRunEnvWritesDeclaredArtifact(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "metrics", nil, nil)
 	env.DeclareArtifacts([]contract.ArtifactDef{

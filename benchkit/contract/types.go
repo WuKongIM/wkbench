@@ -333,6 +333,7 @@ type TestRunEnv struct {
 	artifactDefs map[string]ArtifactDef
 	artifacts    map[string]ArtifactInfo
 	runDuration  time.Duration
+	workerCount  int
 
 	mu     sync.Mutex
 	nextID int64
@@ -351,6 +352,7 @@ func NewTestRunEnv(runID, unitName string, inputs map[string]any, spec map[strin
 		artifactDefs: make(map[string]ArtifactDef),
 		artifacts:    make(map[string]ArtifactInfo),
 		runDuration:  time.Second,
+		workerCount:  1,
 	}
 }
 
@@ -366,8 +368,21 @@ func (e *TestRunEnv) RunDuration() time.Duration { return e.runDuration }
 // SetRunDuration changes the test run duration.
 func (e *TestRunEnv) SetRunDuration(d time.Duration) { e.runDuration = d }
 
+// SetWorkerCount changes the test worker count. Non-positive values reset to the default.
+func (e *TestRunEnv) SetWorkerCount(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	e.workerCount = count
+}
+
 // WorkerCount implements PlanEnv.
-func (e *TestRunEnv) WorkerCount() int { return 1 }
+func (e *TestRunEnv) WorkerCount() int {
+	if e.workerCount <= 0 {
+		return 1
+	}
+	return e.workerCount
+}
 
 // DecodeSpec implements ValidateEnv.
 func (e *TestRunEnv) DecodeSpec(out any) error { return decodeMap(e.spec, out) }
