@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -290,6 +291,50 @@ func TestServerRunSendsMetricFlush(t *testing.T) {
 	}
 }
 
+func TestServerRunTypedStructInputFromRPC(t *testing.T) {
+	srv := newServer(Plugin{Name: "demo.plugin", Version: "0.1.0", Units: []contract.Unit{typedInputUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "run-1",
+		Body: &protocol.Frame_RunRequest{RunRequest: &protocol.RunRequest{
+			UnitName:          "typed",
+			Kind:              "demo.typed_input/v1",
+			RunId:             "run-1",
+			RunDurationMillis: 1000,
+			WorkerCount:       1,
+			SpecJson:          []byte(`{}`),
+			Inputs: map[string]*protocol.PortValue{
+				"request": {
+					Encoding:  "json",
+					Transport: string(contract.PortTransportInline),
+					Payload:   []byte(`{"message":"hello","count":3}`),
+				},
+			},
+		}},
+	}
+
+	if err := srv.handleRun(context.Background(), frame, frame.GetRunRequest(), protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle run: %v", err)
+	}
+
+	outputFrame := readServerTestFrame(t, &out)
+	output := outputFrame.GetSetOutput()
+	if output == nil {
+		t.Fatalf("first response body = %T, want set output", outputFrame.Body)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(output.GetValue().GetPayload(), &response); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if response["summary"] != "hello:3" {
+		t.Fatalf("response = %#v", response)
+	}
+	terminalFrame := readServerTestFrame(t, &out)
+	if status := terminalFrame.GetTerminalStatus(); status == nil || !status.GetOk() {
+		t.Fatalf("terminal status = %#v", status)
+	}
+}
+
 func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
 	t.Helper()
 	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
@@ -433,4 +478,40 @@ func (metricFlushUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	env.ObserveDuration("latency", time.Millisecond, nil)
 	env.ObserveDuration("latency", 3*time.Millisecond, nil)
 	return nil
+}
+
+type typedInputRequest struct {
+	Message string `json:"message"`
+	Count   int    `json:"count"`
+}
+
+type typedInputUnit struct{}
+
+func (typedInputUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "demo.typed_input/v1",
+		Inputs: []contract.PortDef{{
+			Name: "request",
+			Type: "port.demo.request/v1",
+		}},
+		Outputs: []contract.PortDef{{
+			Name: "response",
+			Type: "port.demo.response/v1",
+		}},
+	}
+}
+func (typedInputUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (typedInputUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (typedInputUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	request, err := contract.Input[typedInputRequest](env, "request")
+	if err != nil {
+		return err
+	}
+	return env.SetOutput("response", map[string]any{
+		"summary": fmt.Sprintf("%s:%d", request.Message, request.Count),
+	})
 }

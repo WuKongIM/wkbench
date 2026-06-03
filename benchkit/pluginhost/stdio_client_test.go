@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +229,104 @@ func TestSetOutputFromFrameDoesNotExposeSensitiveReportableOutput(t *testing.T) 
 	}
 	if _, ok := output.(contract.ReportableOutput); ok {
 		t.Fatalf("sensitive output implements ReportableOutput: %T", output)
+	}
+}
+
+func TestEncodeInputPortValuesRejectsUnsupportedPhase1Metadata(t *testing.T) {
+	tests := []struct {
+		name string
+		def  contract.PortDef
+		want string
+	}{
+		{
+			name: "local resource",
+			def: contract.PortDef{
+				Name: "sender",
+				Type: "port.demo.sender/v1",
+				Meta: contract.PortMeta{Boundary: contract.PortBoundaryLocalResource},
+			},
+			want: "boundary local_resource",
+		},
+		{
+			name: "paged transport",
+			def: contract.PortDef{
+				Name: "items",
+				Type: "port.demo.items/v1",
+				Meta: contract.PortMeta{Transport: contract.PortTransportPaged},
+			},
+			want: "transport paged",
+		},
+		{
+			name: "artifact ref transport",
+			def: contract.PortDef{
+				Name: "items",
+				Type: "port.demo.items/v1",
+				Meta: contract.PortMeta{Transport: contract.PortTransportArtifactRef},
+			},
+			want: "transport artifact_ref",
+		},
+		{
+			name: "sensitive",
+			def: contract.PortDef{
+				Name: "token",
+				Type: "port.demo.token/v1",
+				Meta: contract.PortMeta{Sensitive: true},
+			},
+			want: "sensitive",
+		},
+		{
+			name: "non json encoding",
+			def: contract.PortDef{
+				Name: "payload",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{Encodings: []string{"protobuf"}},
+			},
+			want: "json encoding",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := encodeInputPortValues([]contract.PortDef{tt.def}, map[string]any{tt.def.Name: "value"})
+			if err == nil {
+				t.Fatal("expected metadata rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeInputPortValuesRejectsOversizedPayload(t *testing.T) {
+	def := contract.PortDef{
+		Name: "payload",
+		Type: "port.demo.payload/v1",
+		Meta: contract.PortMeta{MaxPayloadBytes: 4},
+	}
+
+	_, err := encodeInputPortValues([]contract.PortDef{def}, map[string]any{"payload": "hello"})
+	if err == nil {
+		t.Fatal("expected oversized payload rejection")
+	}
+	if !strings.Contains(err.Error(), "exceeds max payload bytes") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestEncodeInputPortValuesPreservesOptionalMissingInput(t *testing.T) {
+	def := contract.PortDef{
+		Name:     "payload",
+		Type:     "port.demo.payload/v1",
+		Optional: true,
+	}
+
+	got, err := encodeInputPortValues([]contract.PortDef{def}, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("inputs = %#v, want nil", got)
 	}
 }
 

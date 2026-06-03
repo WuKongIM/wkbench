@@ -77,7 +77,8 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 			WorkerCount:       env.WorkerCount(),
 			SpecJSON:          spec,
 		},
-		Inputs: inputs,
+		InputDefs: u.unit.Definition().Inputs,
+		Inputs:    inputs,
 	}, env)
 }
 

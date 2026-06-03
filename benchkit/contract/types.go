@@ -322,7 +322,15 @@ func Input[T any](env RunEnv, name string) (T, error) {
 	}
 	typed, ok := value.(T)
 	if !ok {
-		return zero, fmt.Errorf("input %q has unexpected type %T", name, value)
+		payload, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			return zero, fmt.Errorf("input %q has unexpected type %T and cannot encode as json: %w", name, value, marshalErr)
+		}
+		var decoded T
+		if unmarshalErr := json.Unmarshal(payload, &decoded); unmarshalErr != nil {
+			return zero, fmt.Errorf("input %q has unexpected type %T; decode as %T: %w", name, value, zero, unmarshalErr)
+		}
+		return decoded, nil
 	}
 	return typed, nil
 }

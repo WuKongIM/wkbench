@@ -50,6 +50,53 @@ func TestPortDefMetadataPreservesExplicitCapability(t *testing.T) {
 	}
 }
 
+func TestInputDecodesJSONShapedStruct(t *testing.T) {
+	type message struct {
+		Text  string `json:"text"`
+		Count int    `json:"count"`
+	}
+	env := contract.NewTestRunEnv("run-1", "unit", map[string]any{
+		"message": map[string]any{"text": "hello", "count": float64(3)},
+	}, nil)
+
+	got, err := contract.Input[message](env, "message")
+	if err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	if got != (message{Text: "hello", Count: 3}) {
+		t.Fatalf("message = %#v", got)
+	}
+}
+
+func TestInputDecodesJSONShapedSlice(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "unit", map[string]any{
+		"ids": []any{float64(1), float64(2), float64(3)},
+	}, nil)
+
+	got, err := contract.Input[[]int](env, "ids")
+	if err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	if !reflect.DeepEqual(got, []int{1, 2, 3}) {
+		t.Fatalf("ids = %#v", got)
+	}
+}
+
+func TestInputReportsJSONShapeDecodeErrors(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "unit", map[string]any{
+		"ids": []any{"not-an-int"},
+	}, nil)
+
+	_, err := contract.Input[[]int](env, "ids")
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), `input "ids" has unexpected type []interface {}`) ||
+		!strings.Contains(err.Error(), "decode as []int") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestTestRunEnvRecordsDurationObservations(t *testing.T) {
 	env := contract.NewTestRunEnv("run-1", "traffic", nil, nil)
 	env.ObserveDuration("sendack_latency", 10*time.Millisecond, nil)

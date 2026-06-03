@@ -215,7 +215,7 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		return err
 	}
 
-	inputs, err := encodeInputPortValues(req.Inputs)
+	inputs, err := encodeInputPortValues(req.InputDefs, req.Inputs)
 	if err != nil {
 		return err
 	}
@@ -314,19 +314,45 @@ func (c *StdioClient) readFrame(ctx context.Context, op string) (*protocol.Frame
 	return result.frame, nil
 }
 
-func encodeInputPortValues(inputs map[string]any) (map[string]*protocol.PortValue, error) {
+func encodeInputPortValues(defs []contract.PortDef, inputs map[string]any) (map[string]*protocol.PortValue, error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
+	defByName := make(map[string]contract.PortDef, len(defs))
+	for _, def := range defs {
+		defByName[def.Name] = def
+	}
 	out := make(map[string]*protocol.PortValue, len(inputs))
 	for name, value := range inputs {
+		def, ok := defByName[name]
+		if !ok {
+			return nil, fmt.Errorf("input %q has no remote port definition", name)
+		}
+		meta := def.Metadata()
+		if meta.Boundary != contract.PortBoundaryData {
+			return nil, fmt.Errorf("input %q boundary %s cannot cross the plugin RPC boundary in phase 1", name, meta.Boundary)
+		}
+		if meta.Transport != contract.PortTransportInline {
+			return nil, fmt.Errorf("input %q transport %s is not supported for plugin RPC inputs in phase 1", name, meta.Transport)
+		}
+		if meta.Sensitive {
+			return nil, fmt.Errorf("input %q is sensitive and cannot be sent inline over plugin RPC in phase 1", name)
+		}
+		if len(meta.Encodings) > 0 && !slices.Contains(meta.Encodings, "json") {
+			return nil, fmt.Errorf("input %q must allow json encoding for plugin RPC inputs in phase 1", name)
+		}
 		payload, err := json.Marshal(value)
 		if err != nil {
 			return nil, fmt.Errorf("encode input %q json: %w", name, err)
 		}
+		if int64(len(payload)) > meta.MaxPayloadBytes {
+			return nil, fmt.Errorf("input %q json payload size %d exceeds max payload bytes %d", name, len(payload), meta.MaxPayloadBytes)
+		}
 		out[name] = &protocol.PortValue{
+			Type:      string(def.Type),
 			Encoding:  "json",
-			Transport: string(contract.PortTransportInline),
+			Transport: string(meta.Transport),
+			Sensitive: meta.Sensitive,
 			Payload:   payload,
 		}
 	}
