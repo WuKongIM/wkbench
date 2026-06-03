@@ -33,6 +33,11 @@ type StdioClient struct {
 
 var errStdioClientClosed = errors.New("stdio plugin client closed")
 
+type readResult struct {
+	frame *protocol.Frame
+	err   error
+}
+
 func StartStdioClient(ctx context.Context, path string) (*StdioClient, error) {
 	cmd := exec.CommandContext(ctx, path)
 
@@ -83,20 +88,20 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		return Plugin{}, fmt.Errorf("write handshake request: %w", err)
 	}
 
-	readDone := make(chan struct{})
+	readResultCh := make(chan readResult, 1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			c.shutdown(true)
-			c.startWait()
-		case <-readDone:
-		}
+		frame, err := c.reader.ReadFrame()
+		readResultCh <- readResult{frame: frame, err: err}
 	}()
-	frame, err := c.reader.ReadFrame()
-	close(readDone)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+
+	result, canceled, ctxErr := waitForFrame(ctx, readResultCh)
+	if canceled {
+		c.shutdown(true)
+		c.startWait()
+		<-readResultCh
 		return Plugin{}, fmt.Errorf("handshake canceled: %w", ctxErr)
 	}
+	frame, err := result.frame, result.err
 	if err != nil {
 		return Plugin{}, fmt.Errorf("read handshake response: %w", err)
 	}
@@ -115,6 +120,26 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		manifest.Protocol = response.GetSelectedProtocol()
 	}
 	return manifest, nil
+}
+
+func waitForFrame(ctx context.Context, readResultCh <-chan readResult) (readResult, bool, error) {
+	select {
+	case result := <-readResultCh:
+		return result, false, nil
+	default:
+	}
+
+	select {
+	case result := <-readResultCh:
+		return result, false, nil
+	case <-ctx.Done():
+		select {
+		case result := <-readResultCh:
+			return result, false, nil
+		default:
+			return readResult{}, true, ctx.Err()
+		}
+	}
 }
 
 func (c *StdioClient) Close() error {

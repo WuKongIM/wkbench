@@ -65,6 +65,32 @@ func TestStdioClientCanceledHandshakeStopsHungPlugin(t *testing.T) {
 	}
 }
 
+func TestStdioClientSuccessfulHandshakeStopsCancelWatcher(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	client, err := StartStdioClient(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("close client: %v", err)
+		}
+	}()
+
+	for i := 0; i < 20; i++ {
+		ctx := newErrCancelContext()
+		if _, err := client.Handshake(ctx); err != nil {
+			t.Fatalf("handshake %d: %v", i, err)
+		}
+
+		time.Sleep(time.Millisecond)
+		if _, err := client.Handshake(context.Background()); err != nil {
+			t.Fatalf("follow-up handshake %d: %v", i, err)
+		}
+	}
+}
+
 func buildDemoPlugin(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
@@ -89,6 +115,35 @@ func writeSleepPlugin(t *testing.T, delay time.Duration) string {
 		t.Fatalf("write sleep plugin: %v", err)
 	}
 	return path
+}
+
+type errCancelContext struct {
+	done  chan struct{}
+	calls int
+}
+
+func newErrCancelContext() *errCancelContext {
+	return &errCancelContext{done: make(chan struct{})}
+}
+
+func (c *errCancelContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (c *errCancelContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *errCancelContext) Err() error {
+	c.calls++
+	if c.calls == 2 {
+		close(c.done)
+	}
+	return nil
+}
+
+func (c *errCancelContext) Value(key any) any {
+	return nil
 }
 
 func repoRoot(t *testing.T) string {
