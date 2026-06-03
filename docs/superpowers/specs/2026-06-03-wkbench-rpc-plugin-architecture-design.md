@@ -115,7 +115,13 @@ Use a versioned protobuf protocol as the stable ABI. Connect, gRPC, or a small
 custom framed transport can carry the protobuf messages. The important point is
 that the ABI is protobuf, not Go interfaces.
 
-Minimum services:
+The protocol is bidirectional. Host-to-plugin lifecycle calls are not enough,
+because a running unit still needs the host-owned run environment for inputs,
+outputs, artifacts, cancellation, and cross-plugin capability streams. The
+transport must therefore support full-duplex multiplexing with request IDs,
+run IDs, unit instance IDs, and deadline/cancellation messages.
+
+Minimum host-to-plugin services:
 
 ```text
 PluginService
@@ -123,21 +129,49 @@ PluginService
   ListUnits(ListUnitsRequest) returns (ListUnitsResponse)
   Validate(ValidateRequest) returns (ValidateResponse)
   Plan(PlanRequest) returns (PlanResponse)
-  Run(RunRequest) returns (RunResponse)
+  Run(stream HostFrame) returns (stream PluginFrame)
   Start(StartRequest) returns (StartResponse)
   Stop(StopRequest) returns (StopResponse)
   CloseRun(CloseRunRequest) returns (CloseRunResponse)
-
-ArtifactService
-  OpenArtifact/OpenArtifactStream
-
-CapabilityService
-  OpenStreamCapability
-  CloseCapability
 ```
 
-`Start` and `Stop` support background units. A plugin can return a task handle
-from `Start`. The host stores that handle and passes it back to `Stop`.
+Minimum plugin-to-host run environment services:
+
+```text
+RunEnvService
+  GetInput(GetInputRequest) returns (PortValue)
+  SetOutput(SetOutputRequest) returns (SetOutputResponse)
+  FlushMetrics(FlushMetricsRequest) returns (FlushMetricsResponse)
+  OpenArtifact(OpenArtifactRequest) returns (ArtifactWriteStream)
+  OpenStreamCapability
+  CloseCapability
+  ReportBackgroundEvent
+```
+
+`Run` is always a bidirectional stream. The first host frame contains the
+`RunRequest`; later host frames carry run-environment responses, cancellation,
+and deadlines. Plugin frames carry run-environment requests, metric flushes,
+outputs, artifact writes, capability stream frames, and terminal status. There
+are no ad hoc side channels. Every frame carries the run/session ID and unit
+instance ID so the host can correlate metrics, artifacts, outputs,
+cancellation, and errors.
+
+`Start` and `Stop` support background units. `Start` returns only after the
+background task is ready for downstream units. A plugin returns a task handle
+and then keeps reporting background events until `Stop` completes or the task
+fails.
+
+Background task events:
+
+- `ready`: emitted before `Start` returns, after the worker is active.
+- `heartbeat`: optional liveness signal for long-running tasks.
+- `fatal_error`: cancels the run and marks the task's unit as failed.
+- `completed`: task exited normally before or during `Stop`.
+
+`Stop` must be bounded by a host deadline. If the plugin does not stop in time,
+the host cancels the task, records a stop timeout, and escalates to process
+termination after active units and artifacts have been snapshotted as far as
+possible.
 
 RPC responses should carry structured errors:
 
@@ -152,10 +186,41 @@ The host maps those errors to the existing report statuses.
 ## Port Model
 
 Ports must be explicit about whether they can cross a process boundary.
+Every input and output port definition must declare enough metadata for the
+host to validate wiring before execution:
+
+```yaml
+name: sender
+type: port.wkproto.message_sender/v1
+boundary: stream_capability
+schema: wkbench.ports.wkproto.MessageSenderV1
+encodings: [protobuf]
+transport: inline
+max_payload_bytes: 1048576
+sensitive: false
+reportable: false
+operations:
+  - OpenSendStream
+```
+
+Required metadata:
+
+- `boundary`: `data`, `stream_capability`, or `local_resource`.
+- `schema`: versioned data schema or capability contract.
+- `encodings`: allowed wire encodings for data payloads.
+- `transport`: `inline`, `paged`, or `artifact_ref` for data ports.
+- `max_payload_bytes`: hard bound for inline data payloads.
+- `sensitive`: whether payloads or fields need redaction and consent rules.
+- `reportable`: whether a compact value may appear in `report.json`.
+- `operations`: capability operations when `boundary` is `stream_capability`.
+
+The host rejects scenarios that wire incompatible boundaries, schemas,
+encodings, sensitivity rules, or capability operation contracts.
 
 ### Data Port
 
-Data ports are JSON/protobuf-serializable and may be consumed by any plugin.
+Data ports are JSON/protobuf-serializable and may be consumed by any plugin
+when their sensitivity policy allows it.
 
 Examples:
 
@@ -172,11 +237,34 @@ Data port values are sent as an envelope:
 type: port.identity.pool/v1
 encoding: json | protobuf
 schema_version: v1
+sensitive: false
+reportable: true
 payload: bytes
 ```
 
 The host validates declared port types and forwards payloads without needing to
-understand every domain schema.
+understand every domain schema. It must still enforce the port metadata:
+sensitive payloads are redacted in logs and reports, non-reportable payloads
+cannot appear inline in `report.json`, and payloads over the inline size limit
+must use `transport: paged`, `transport: artifact_ref`, or a local/capability
+port.
+
+Data transports:
+
+- `inline`: one bounded payload carried in the output envelope.
+- `paged`: host asks the producing plugin for deterministic pages by cursor or
+  offset; page size and total size are declared in the output envelope.
+- `artifact_ref`: output envelope points at a host-managed artifact for large
+  generated datasets.
+
+Concrete first-version limits:
+
+- inline data port payloads default to 1 MiB unless the port schema declares a
+  lower limit;
+- reportable output summaries default to 64 KiB;
+- larger identity, channel, or sample sets must be represented as data ports
+  with `transport: paged` or `transport: artifact_ref`, not single inline
+  payloads.
 
 ### Stream Capability Port
 
@@ -209,6 +297,9 @@ The stream protocol should support:
 - backpressure
 - deadline/cancellation
 - final stats and terminal error
+
+The host proxies stream capability traffic, but it should not inspect message
+payloads on the hot path except for routing, accounting, and cancellation.
 
 ### Local Resource Port
 
@@ -273,6 +364,7 @@ The user experience:
 
 ```bash
 wkbench plugin install github.com/acme/wkbench-plugin@v0.1.0
+wkbench plugin lock
 wkbench plugin list
 wkbench list-units
 wkbench validate -scenario ./bench.yaml
@@ -350,7 +442,7 @@ benchkit/engine/          graph validation, planning, execution
 benchkit/pluginhost/      discovery, process lifecycle, RPC clients
 benchkit/protocol/        generated protobuf and versioned ABI helpers
 benchkit/report/          report writer
-ports/                    public port schemas and capability contracts
+benchkit/ports/           public port schemas and capability contracts
 sdk/go/wkbench/           Go plugin authoring SDK
 sdk/go/wkbench/plugin/    Serve, manifests, test harnesses
 plugins/official/core/    official core plugin
@@ -373,9 +465,12 @@ next to it:
 name: acme.system
 version: 0.1.0
 protocol: wkbench.plugin/v1
+source: github.com/acme/wkbench-plugin@v0.1.0
 units:
   - kind: acme.target/v1
+    plugin_unit_id: target
   - kind: acme.send_traffic/v1
+    plugin_unit_id: send_traffic
 ```
 
 Install locations:
@@ -389,6 +484,61 @@ bundled/                  official plugins shipped with wkbench
 Resolution order should be project-local, then user, then bundled. Duplicate
 plugin names with incompatible versions should fail before scenario validation.
 
+Unit kind ownership must be deterministic:
+
+- multiple plugins may expose the same unit kind, but unqualified `use:` is
+  valid only when exactly one enabled plugin provides that kind;
+- if two enabled plugins provide the same kind, unqualified `use:` is a
+  scenario-time ambiguity error;
+- a scenario disambiguates through explicit plugin ownership syntax, such as
+  `use: acme.system:acme.send_traffic/v1`;
+- reports record the resolved plugin name, plugin version, source, checksum,
+  protocol version, and unit kind for every scenario unit.
+
+Installed plugins should be reproducible through a lockfile:
+
+```text
+wkbench.plugin.lock
+```
+
+The lockfile records plugin name, version, source, checksum, protocol version,
+and installed executable path. `wkbench run` should warn or fail, according to
+strictness settings, when the resolved plugin set differs from the lockfile.
+Even metadata-only commands such as `list-units` and `validate` execute plugin
+binaries, so users need this explicit trust and provenance trail.
+
+## Sensitive Data And Trust
+
+Plugins are executable code. The host cannot make an untrusted plugin safe after
+launching it, but it can make trust decisions explicit and prevent accidental
+secret exposure.
+
+Sensitive data rules:
+
+- port schemas mark sensitive fields and sensitive whole-payload ports;
+- sensitive values are redacted in host logs, plugin error details, reports,
+  and scenario explanations;
+- reportable outputs must be compact summaries with sensitive fields removed;
+- a third-party plugin may receive a sensitive data port only when the scenario
+  explicitly wires that input or declares the plugin as trusted for that run;
+- automatic input wiring must not silently connect sensitive ports across
+  plugin ownership boundaries;
+- plugin stderr is captured as an artifact or log reference, but host-rendered
+  summaries redact known sensitive values.
+
+Trust should be scenario-visible:
+
+```yaml
+requires:
+  plugins:
+    - name: acme.system
+      version: ">=0.1.0"
+      trust: sensitive-inputs
+```
+
+If `trust` is omitted, the plugin can still consume non-sensitive data ports and
+capabilities, but the host rejects implicit sensitive data wiring to it.
+
 ## Execution Semantics
 
 Graph execution remains deterministic:
@@ -396,26 +546,53 @@ Graph execution remains deterministic:
 1. Collect the unit catalog from all required plugins.
 2. Parse and expand scenario YAML.
 3. Resolve each `use` kind to exactly one plugin unit.
-4. Validate local specs by RPC.
-5. Validate port wiring using unit definitions and port boundary rules.
-6. Plan each unit by RPC in graph order.
-7. Run foreground units and start background units in graph order.
-8. Stop background tasks in reverse start order.
-9. Close capabilities and local resources.
-10. Write report artifacts.
+4. Validate duplicate kind and plugin ownership rules.
+5. Validate local specs by RPC.
+6. Validate port wiring using unit definitions and port boundary rules.
+7. Plan each unit by RPC in graph order.
+8. Run foreground units and start background units in graph order.
+9. Watch background event streams while foreground work runs.
+10. Stop background tasks in reverse start order with deadlines.
+11. Close capabilities and local resources.
+12. Write report artifacts.
 
 The host owns graph state. Plugins own unit internals.
 
 ## Metrics And Artifacts
 
-Metrics should remain host-collected so reports are consistent. Plugins emit
-metrics through the RPC run environment:
+Metrics should remain host-owned at the report boundary, but plugins should
+aggregate metrics locally. A unit must not call the host for every benchmark
+message on a hot path.
+
+Plugin-side metric recording APIs should look like local SDK calls:
 
 ```text
 EmitCounter
 ObserveDuration
 EmitGauge
 ```
+
+The SDK aggregates those calls inside the plugin process. The plugin flushes
+bounded metric snapshots to the host periodically and at unit completion:
+
+```text
+FlushMetrics
+  counters: delta sums since last flush
+  gauges: latest values
+  durations: count, sum, min, max, and bounded histogram/sketch buckets
+```
+
+Flush rules:
+
+- hot traffic units aggregate per-message observations locally;
+- flush interval defaults to one second for long-running units;
+- units always flush once before `Run` returns or `Stop` completes;
+- duration metrics use bounded histograms or sketches, not raw unbounded
+  samples;
+- the host merges snapshots into deterministic report summaries.
+
+This preserves one report model without making RPC overhead part of the
+measured workload.
 
 For high-volume raw samples, plugins should write artifacts through host-managed
 artifact streams. Large raw samples should not be placed inline in `report.json`.
@@ -457,6 +634,18 @@ and port compatibility are validated during scenario loading.
 Breaking changes require new versions. Existing versions should remain
 loadable until deliberately removed from the distribution.
 
+Compatibility policy:
+
+- plugin protocol versions support an explicit min/max range in handshake;
+- patch versions must be wire-compatible;
+- minor versions may add optional fields, operations, and unit kinds;
+- breaking protocol, unit spec, or port schema changes require a new versioned
+  identifier;
+- official plugins should keep at least one previous minor line loadable while
+  examples and docs migrate;
+- deprecated protocol, unit, or port versions should emit warnings during
+  `validate` before removal in a later release.
+
 ## Error Handling
 
 Errors should be structured and mapped to run statuses:
@@ -482,7 +671,7 @@ Host tests:
 
 - plugin discovery and version resolution
 - duplicate unit kind handling
-- data port wiring across plugins
+- data port wiring and paged transport across plugins
 - local resource wiring rejection across plugins
 - stream capability wiring and cancellation
 - plugin crash behavior
@@ -511,21 +700,92 @@ End-to-end tests:
 - validate example scenarios
 - run dry scenarios without a live WuKongIM target
 
+Additional protocol tests:
+
+- bidirectional run environment calls cannot deadlock during `Run`
+- background fatal events cancel foreground execution
+- plugin-side metric aggregation does not flush per message
+- sensitive ports are not auto-wired across plugin ownership boundaries
+- plugin lockfile mismatch is reported before execution
+
+## Current Port Inventory
+
+The rebuild starts by classifying existing ports. This inventory should be
+expanded as ports change, but the initial classification is:
+
+```text
+port.identity.pool/v1
+  boundary: data
+  transport: inline for small pools, paged for large pools
+  sensitive: true when identities include tokens
+  notes: current Go interface must become a bounded/pageable schema.
+
+port.identity.token_source/v1
+  boundary: local_resource by default; data only with explicit trust
+  transport: inline when exposed as data
+  sensitive: true
+  notes: avoid automatic cross-plugin wiring; token lookup may become an
+  explicit sensitive capability if cross-plugin use is required.
+
+port.channel.group_set/v1
+  boundary: data
+  transport: inline for small sets, paged for large sets
+  sensitive: false by default
+  notes: large group sets should not be sent as one inline payload.
+
+port.channel.send_target_set/v1
+  boundary: data
+  transport: inline for small sets, paged for large sets
+  sensitive: false by default
+  notes: sender UID lists may be large and need paging.
+
+port.target.endpoint/v1
+  boundary: data
+  sensitive: true when BenchAPIToken is present
+  notes: token field must be redacted from reports, errors, and logs.
+
+port.wkproto.message_sender/v1
+  boundary: stream_capability or local_resource
+  sensitive: false payload, but may access sensitive session state
+  notes: cross-plugin form must be `OpenSendStream`, not per-message unary RPC.
+
+port.wkproto.group_sender/v1
+  boundary: stream_capability or local_resource
+  sensitive: false payload, but may access sensitive session state
+  notes: can share the generic message stream operation with channel type.
+
+port.traffic.summary/v1
+  boundary: data
+  sensitive: false
+  reportable: true
+  notes: compact JSON-friendly output.
+
+port.wukongim.metrics_summary/v1
+  boundary: data
+  sensitive: false by default
+  reportable: true
+  notes: keep raw scrape samples in artifacts.
+```
+
 ## Migration Plan
 
 Because this is a young project, prefer a direct rebuild over long-lived
 compatibility layers.
 
-1. Add the protobuf protocol and `pluginhost`.
-2. Add the Go SDK and test plugin harness.
-3. Rebuild the CLI around plugin catalogs instead of in-process registries.
-4. Move core fake/static units into an official core plugin.
-5. Move traffic units into an official traffic plugin.
-6. Move WuKongIM target/session/preparation/collector units into an official
+1. Inventory every current port and classify it as data, stream capability,
+   local resource, and sensitive/non-sensitive.
+2. Define protobuf schemas and capability operation contracts for each public
+   port that survives the rebuild.
+3. Add the bidirectional protobuf protocol and `pluginhost`.
+4. Add the Go SDK and test plugin harness.
+5. Rebuild the CLI around plugin catalogs instead of in-process registries.
+6. Move core fake/static units into an official core plugin.
+7. Move traffic units into an official traffic plugin.
+8. Move WuKongIM target/session/preparation/collector units into an official
    WuKongIM plugin.
-7. Move report assertion units into an official report plugin.
-8. Delete the old CLI unit registration path.
-9. Update docs, examples, and scaffolding for plugin-first authoring.
+9. Move report assertion units into an official report plugin.
+10. Delete the old CLI unit registration path.
+11. Update docs, examples, and scaffolding for plugin-first authoring.
 
 During migration, temporary adapters are acceptable inside tests and migration
 branches, but the final architecture should have one host-to-plugin execution
