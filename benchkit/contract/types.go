@@ -204,6 +204,14 @@ type RunEnv interface {
 	OpenArtifact(name string) (io.WriteCloser, error)
 }
 
+// InputSourcePortProvider exposes the producing output port metadata for wired
+// runtime inputs. It is read-only metadata for boundary validation.
+type InputSourcePortProvider interface {
+	// InputSourcePort returns the producing output port definition for a
+	// unit-local input name.
+	InputSourcePort(name string) (PortDef, bool)
+}
+
 // MetricSnapshotRecorder records aggregate metric snapshots when exact samples
 // are unavailable, such as across the plugin process boundary.
 type MetricSnapshotRecorder interface {

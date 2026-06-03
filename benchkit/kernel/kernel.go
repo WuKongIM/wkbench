@@ -899,6 +899,24 @@ func (e *runEnv) Input(name string) (any, error) {
 	return value, nil
 }
 
+func (e *runEnv) InputSourcePort(name string) (contract.PortDef, bool) {
+	node := e.graph.nodes[e.unitName]
+	ref, ok := node.bindings[name]
+	if !ok {
+		return contract.PortDef{}, false
+	}
+	source := e.graph.nodes[ref.unit]
+	if source == nil {
+		return contract.PortDef{}, false
+	}
+	for _, output := range source.def.Outputs {
+		if output.Name == ref.port {
+			return clonePortDef(output), true
+		}
+	}
+	return contract.PortDef{}, false
+}
+
 func (e *runEnv) SetOutput(name string, value any) error {
 	e.outputs.set(e.unitName, name, value)
 	return nil
@@ -1298,6 +1316,12 @@ func (s *outputStore) resultsForUnit(unit string, defs []contract.PortDef) map[s
 		return nil
 	}
 	return results
+}
+
+func clonePortDef(def contract.PortDef) contract.PortDef {
+	def.Meta.Encodings = append([]string(nil), def.Meta.Encodings...)
+	def.Meta.Operations = append([]string(nil), def.Meta.Operations...)
+	return def
 }
 
 func (s *outputStore) cleanup(order []string, results map[string]UnitResult) {

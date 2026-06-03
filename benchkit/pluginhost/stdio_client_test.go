@@ -287,7 +287,7 @@ func TestEncodeInputPortValuesRejectsUnsupportedPhase1Metadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := encodeInputPortValues([]contract.PortDef{tt.def}, map[string]any{tt.def.Name: "value"})
+			_, err := encodeInputPortValues([]contract.PortDef{tt.def}, nil, map[string]any{tt.def.Name: "value"})
 			if err == nil {
 				t.Fatal("expected metadata rejection")
 			}
@@ -305,7 +305,7 @@ func TestEncodeInputPortValuesRejectsOversizedPayload(t *testing.T) {
 		Meta: contract.PortMeta{MaxPayloadBytes: 4},
 	}
 
-	_, err := encodeInputPortValues([]contract.PortDef{def}, map[string]any{"payload": "hello"})
+	_, err := encodeInputPortValues([]contract.PortDef{def}, nil, map[string]any{"payload": "hello"})
 	if err == nil {
 		t.Fatal("expected oversized payload rejection")
 	}
@@ -321,12 +321,101 @@ func TestEncodeInputPortValuesPreservesOptionalMissingInput(t *testing.T) {
 		Optional: true,
 	}
 
-	got, err := encodeInputPortValues([]contract.PortDef{def}, nil)
+	got, err := encodeInputPortValues([]contract.PortDef{def}, nil, nil)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	if got != nil {
 		t.Fatalf("inputs = %#v, want nil", got)
+	}
+}
+
+func TestEncodeInputPortValuesRejectsUnsupportedProducerMetadata(t *testing.T) {
+	consumerDef := contract.PortDef{
+		Name: "payload",
+		Type: "port.demo.payload/v1",
+	}
+	tests := []struct {
+		name      string
+		sourceDef contract.PortDef
+		value     any
+		want      string
+	}{
+		{
+			name: "sensitive producer",
+			sourceDef: contract.PortDef{
+				Name: "result",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{Sensitive: true},
+			},
+			value: "value",
+			want:  "producer output \"result\" is sensitive",
+		},
+		{
+			name: "local resource producer",
+			sourceDef: contract.PortDef{
+				Name: "result",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{Boundary: contract.PortBoundaryLocalResource},
+			},
+			value: "value",
+			want:  "producer output \"result\" boundary local_resource",
+		},
+		{
+			name: "paged producer",
+			sourceDef: contract.PortDef{
+				Name: "result",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{Transport: contract.PortTransportPaged},
+			},
+			value: "value",
+			want:  "producer output \"result\" transport paged",
+		},
+		{
+			name: "non json producer",
+			sourceDef: contract.PortDef{
+				Name: "result",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{Encodings: []string{"protobuf"}},
+			},
+			value: "value",
+			want:  "producer output \"result\" must allow json encoding",
+		},
+		{
+			name: "oversized for producer",
+			sourceDef: contract.PortDef{
+				Name: "result",
+				Type: "port.demo.payload/v1",
+				Meta: contract.PortMeta{MaxPayloadBytes: 4},
+			},
+			value: "hello",
+			want:  "exceeds producer output \"result\" max payload bytes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := encodeInputPortValues([]contract.PortDef{consumerDef}, map[string]contract.PortDef{"payload": tt.sourceDef}, map[string]any{"payload": tt.value})
+			if err == nil {
+				t.Fatal("expected producer metadata rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeInputPortValuesRejectsProducerConsumerTypeMismatch(t *testing.T) {
+	consumerDef := contract.PortDef{Name: "payload", Type: "port.demo.payload/v1"}
+	sourceDef := contract.PortDef{Name: "result", Type: "port.demo.other/v1"}
+
+	_, err := encodeInputPortValues([]contract.PortDef{consumerDef}, map[string]contract.PortDef{"payload": sourceDef}, map[string]any{"payload": "value"})
+	if err == nil {
+		t.Fatal("expected type mismatch")
+	}
+	if !strings.Contains(err.Error(), "producer output \"result\" type port.demo.other/v1 does not match consumer input \"payload\" type port.demo.payload/v1") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

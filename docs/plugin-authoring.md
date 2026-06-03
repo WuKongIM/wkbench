@@ -69,12 +69,13 @@ The plugin server sends separate raw and report payloads when available. The
 host stores the raw output for downstream inputs and exposes only the report
 payload in reports. Sensitive outputs are not exposed in reports.
 
-For cross-process inputs in Phase 1, the host enforces the input port metadata
-before sending the RPC request. Inputs must be non-sensitive
-`PortBoundaryData` ports with `PortTransportInline`, must allow JSON when
-`Encodings` is set, and must fit within `MaxPayloadBytes`. Paged,
-artifact-ref, stream capability, and local-resource inputs are rejected until
-those transports have explicit protocol support.
+For cross-process inputs in Phase 1, the host enforces the metadata on both
+the producing output port and the consuming input port before sending the RPC
+request. Both sides must be non-sensitive `PortBoundaryData` ports with
+`PortTransportInline`, must allow JSON when `Encodings` is set, and must fit
+within `MaxPayloadBytes`. Paged, artifact-ref, stream capability, and
+local-resource inputs or producer outputs are rejected until those transports
+have explicit protocol support.
 
 ## Host Usage
 
@@ -145,8 +146,9 @@ remote metrics.
 - Plugin transport is `wkbench.plugin/v1` over stdio only.
 - `Validate`, `Plan`, and `Run` are supported; background lifecycle and richer
   streaming APIs are outside this first plugin path.
-- Inputs crossing the process boundary must be non-sensitive inline JSON data
-  ports. Paged, artifact-ref, stream, and local-resource inputs are not
+- Inputs crossing the process boundary must be wired from non-sensitive inline
+  JSON data outputs into non-sensitive inline JSON data inputs. Paged,
+  artifact-ref, stream, and local-resource inputs or producer outputs are not
   transported in Phase 1.
 - Outputs crossing the process boundary are JSON inline values.
 - Remote plugin artifact streaming is not supported. Plugins should not rely on

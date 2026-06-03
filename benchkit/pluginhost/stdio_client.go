@@ -215,7 +215,7 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		return err
 	}
 
-	inputs, err := encodeInputPortValues(req.InputDefs, req.Inputs)
+	inputs, err := encodeInputPortValues(req.InputDefs, req.InputSourceDefs, req.Inputs)
 	if err != nil {
 		return err
 	}
@@ -314,7 +314,7 @@ func (c *StdioClient) readFrame(ctx context.Context, op string) (*protocol.Frame
 	return result.frame, nil
 }
 
-func encodeInputPortValues(defs []contract.PortDef, inputs map[string]any) (map[string]*protocol.PortValue, error) {
+func encodeInputPortValues(defs []contract.PortDef, sourceDefs map[string]contract.PortDef, inputs map[string]any) (map[string]*protocol.PortValue, error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
@@ -329,17 +329,8 @@ func encodeInputPortValues(defs []contract.PortDef, inputs map[string]any) (map[
 			return nil, fmt.Errorf("input %q has no remote port definition", name)
 		}
 		meta := def.Metadata()
-		if meta.Boundary != contract.PortBoundaryData {
-			return nil, fmt.Errorf("input %q boundary %s cannot cross the plugin RPC boundary in phase 1", name, meta.Boundary)
-		}
-		if meta.Transport != contract.PortTransportInline {
-			return nil, fmt.Errorf("input %q transport %s is not supported for plugin RPC inputs in phase 1", name, meta.Transport)
-		}
-		if meta.Sensitive {
-			return nil, fmt.Errorf("input %q is sensitive and cannot be sent inline over plugin RPC in phase 1", name)
-		}
-		if len(meta.Encodings) > 0 && !slices.Contains(meta.Encodings, "json") {
-			return nil, fmt.Errorf("input %q must allow json encoding for plugin RPC inputs in phase 1", name)
+		if err := validatePhase1InputPort("consumer input", def.Name, meta); err != nil {
+			return nil, err
 		}
 		payload, err := json.Marshal(value)
 		if err != nil {
@@ -347,6 +338,18 @@ func encodeInputPortValues(defs []contract.PortDef, inputs map[string]any) (map[
 		}
 		if int64(len(payload)) > meta.MaxPayloadBytes {
 			return nil, fmt.Errorf("input %q json payload size %d exceeds max payload bytes %d", name, len(payload), meta.MaxPayloadBytes)
+		}
+		if sourceDef, ok := sourceDefs[name]; ok {
+			if sourceDef.Type != def.Type {
+				return nil, fmt.Errorf("producer output %q type %s does not match consumer input %q type %s", sourceDef.Name, sourceDef.Type, def.Name, def.Type)
+			}
+			sourceMeta := sourceDef.Metadata()
+			if err := validatePhase1InputPort("producer output", sourceDef.Name, sourceMeta); err != nil {
+				return nil, err
+			}
+			if int64(len(payload)) > sourceMeta.MaxPayloadBytes {
+				return nil, fmt.Errorf("input %q json payload size %d exceeds producer output %q max payload bytes %d", name, len(payload), sourceDef.Name, sourceMeta.MaxPayloadBytes)
+			}
 		}
 		out[name] = &protocol.PortValue{
 			Type:      string(def.Type),
@@ -357,6 +360,22 @@ func encodeInputPortValues(defs []contract.PortDef, inputs map[string]any) (map[
 		}
 	}
 	return out, nil
+}
+
+func validatePhase1InputPort(role, name string, meta contract.PortMeta) error {
+	if meta.Boundary != contract.PortBoundaryData {
+		return fmt.Errorf("%s %q boundary %s cannot cross the plugin RPC boundary in phase 1", role, name, meta.Boundary)
+	}
+	if meta.Transport != contract.PortTransportInline {
+		return fmt.Errorf("%s %q transport %s is not supported for plugin RPC inputs in phase 1", role, name, meta.Transport)
+	}
+	if meta.Sensitive {
+		return fmt.Errorf("%s %q is sensitive and cannot be sent inline over plugin RPC in phase 1", role, name)
+	}
+	if len(meta.Encodings) > 0 && !slices.Contains(meta.Encodings, "json") {
+		return fmt.Errorf("%s %q must allow json encoding for plugin RPC inputs in phase 1", role, name)
+	}
+	return nil
 }
 
 func setOutputFromFrame(env contract.RunEnv, output *protocol.SetOutput) error {

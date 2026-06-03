@@ -24,6 +24,7 @@ type UnitRequest struct {
 
 type RunRequest struct {
 	UnitRequest
-	InputDefs []contract.PortDef
-	Inputs    map[string]any
+	InputDefs       []contract.PortDef
+	InputSourceDefs map[string]contract.PortDef
+	Inputs          map[string]any
 }

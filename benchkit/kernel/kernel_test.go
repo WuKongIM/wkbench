@@ -276,6 +276,39 @@ func TestEngineUnwrapsReportableOutputsForInputs(t *testing.T) {
 	}
 }
 
+func TestEngineRunEnvExposesInputSourcePort(t *testing.T) {
+	reg := registry.New()
+	sourceMeta := contract.PortMeta{
+		Boundary:        contract.PortBoundaryData,
+		Transport:       contract.PortTransportInline,
+		Encodings:       []string{"json"},
+		MaxPayloadBytes: 32,
+	}
+	var got contract.PortDef
+	reg.MustRegister(sourceUnit{outputMeta: sourceMeta})
+	reg.MustRegister(inputSourceProbeUnit{source: &got})
+
+	_, err := kernel.New(reg).Run(context.Background(), dsl.Scenario{
+		Version: "wkbench/v2",
+		Run:     dsl.RunConfig{ID: "source-metadata"},
+		Units: map[string]dsl.UnitNode{
+			"source": {Use: "test.source/v1"},
+			"probe": {
+				Use: "test.input_source_probe/v1",
+				Inputs: map[string]string{
+					"input": "source.value",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run scenario: %v", err)
+	}
+	if got.Name != "value" || got.Type != testValuePort || !reflect.DeepEqual(got.Meta, sourceMeta) {
+		t.Fatalf("source port = %#v", got)
+	}
+}
+
 func TestEngineRecordsEmittedMetrics(t *testing.T) {
 	reg := registry.New()
 	reg.MustRegister(metricsUnit{})
@@ -1327,8 +1360,9 @@ func (failingTimelineUnit) Run(context.Context, contract.RunEnv) error {
 const testValuePort = contract.PortType("port.test.value/v1")
 
 type sourceUnit struct {
-	kind  string
-	calls *[]string
+	kind       string
+	calls      *[]string
+	outputMeta contract.PortMeta
 }
 
 func (u sourceUnit) Definition() contract.Definition {
@@ -1339,7 +1373,7 @@ func (u sourceUnit) Definition() contract.Definition {
 	return contract.Definition{
 		Kind: kind,
 		Outputs: []contract.PortDef{
-			{Name: "value", Type: testValuePort},
+			{Name: "value", Type: testValuePort, Meta: u.outputMeta},
 		},
 	}
 }
@@ -1353,7 +1387,9 @@ func (u sourceUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, erro
 }
 
 func (u sourceUnit) Run(ctx context.Context, env contract.RunEnv) error {
-	*u.calls = append(*u.calls, env.UnitName())
+	if u.calls != nil {
+		*u.calls = append(*u.calls, env.UnitName())
+	}
 	return env.SetOutput("value", "source-value")
 }
 
@@ -1919,6 +1955,38 @@ func (u sinkUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	}
 	*u.calls = append(*u.calls, env.UnitName()+":"+value)
 	return nil
+}
+
+type inputSourceProbeUnit struct {
+	source *contract.PortDef
+}
+
+func (u inputSourceProbeUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.input_source_probe/v1",
+		Inputs: []contract.PortDef{
+			{Name: "input", Type: testValuePort},
+		},
+	}
+}
+func (u inputSourceProbeUnit) Validate(ctx context.Context, env contract.ValidateEnv) error {
+	return nil
+}
+func (u inputSourceProbeUnit) Plan(ctx context.Context, env contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (u inputSourceProbeUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	provider, ok := env.(contract.InputSourcePortProvider)
+	if !ok {
+		return fmt.Errorf("run env does not expose input source ports")
+	}
+	def, ok := provider.InputSourcePort("input")
+	if !ok {
+		return fmt.Errorf("input source port not found")
+	}
+	*u.source = def
+	_, err := env.Input("input")
+	return err
 }
 
 type lifecycleProbeUnit struct {

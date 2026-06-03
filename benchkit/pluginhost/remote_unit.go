@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
@@ -67,6 +68,10 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	if err != nil {
 		return err
 	}
+	inputSourceDefs, err := collectInputSourceDefs(env, inputs)
+	if err != nil {
+		return err
+	}
 	return u.client.Run(ctx, RunRequest{
 		UnitRequest: UnitRequest{
 			PluginName:        u.unit.PluginName,
@@ -77,8 +82,9 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 			WorkerCount:       env.WorkerCount(),
 			SpecJSON:          spec,
 		},
-		InputDefs: u.unit.Definition().Inputs,
-		Inputs:    inputs,
+		InputDefs:       u.unit.Definition().Inputs,
+		InputSourceDefs: inputSourceDefs,
+		Inputs:          inputs,
 	}, env)
 }
 
@@ -95,6 +101,22 @@ func collectInputs(defs []contract.PortDef, env contract.RunEnv) (map[string]any
 		inputs[def.Name] = value
 	}
 	return inputs, nil
+}
+
+func collectInputSourceDefs(env contract.RunEnv, inputs map[string]any) (map[string]contract.PortDef, error) {
+	provider, ok := env.(contract.InputSourcePortProvider)
+	if !ok || len(inputs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]contract.PortDef, len(inputs))
+	for name := range inputs {
+		def, ok := provider.InputSourcePort(name)
+		if !ok {
+			return nil, fmt.Errorf("input %q source port metadata not found", name)
+		}
+		out[name] = def
+	}
+	return out, nil
 }
 
 func encodeSpec(env contract.ValidateEnv) ([]byte, error) {

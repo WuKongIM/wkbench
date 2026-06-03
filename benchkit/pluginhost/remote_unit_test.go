@@ -125,6 +125,53 @@ func TestRemoteUnitRunIgnoresMissingOptionalInput(t *testing.T) {
 	}
 }
 
+func TestRemoteUnitRunPassesInputSourceDefsWhenEnvProvidesThem(t *testing.T) {
+	client := &fakeClient{}
+	sourceDef := contract.PortDef{
+		Name: "result",
+		Type: "port.demo.message/v1",
+		Meta: contract.PortMeta{
+			Boundary:        contract.PortBoundaryData,
+			Transport:       contract.PortTransportInline,
+			Encodings:       []string{"json"},
+			MaxPayloadBytes: 32,
+		},
+	}
+	unit := NewRemoteUnit(client, Unit{
+		PluginName: "demo",
+		Kind:       "demo.echo/v1",
+		Inputs: []contract.PortDef{{
+			Name: "message",
+			Type: "port.demo.message/v1",
+		}},
+	})
+	env := sourceMetadataEnv{
+		TestRunEnv: contract.NewTestRunEnv("run-1", "echo", map[string]any{"message": "hi"}, nil),
+		sources:    map[string]contract.PortDef{"message": sourceDef},
+	}
+
+	if err := unit.Run(context.Background(), env); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got, ok := client.runReq.InputSourceDefs["message"]
+	if !ok {
+		t.Fatalf("source defs missing: %#v", client.runReq.InputSourceDefs)
+	}
+	if got.Name != "result" || got.Type != sourceDef.Type || got.Meta.MaxPayloadBytes != 32 {
+		t.Fatalf("source def = %#v", got)
+	}
+}
+
+type sourceMetadataEnv struct {
+	*contract.TestRunEnv
+	sources map[string]contract.PortDef
+}
+
+func (e sourceMetadataEnv) InputSourcePort(name string) (contract.PortDef, bool) {
+	def, ok := e.sources[name]
+	return def, ok
+}
+
 type fakeClient struct {
 	validateCalled bool
 	planCalled     bool
