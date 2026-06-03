@@ -370,6 +370,312 @@ units:
 	waitForFile(t, secondClosed)
 }
 
+func TestValidateLoadsPluginsFromProjectConfig(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", bin)
+	scenarioPath := filepath.Join(projectDir, "scenario.yaml")
+	scenario := `
+version: wkbench/v2
+run:
+  id: configured-plugin
+  duration: 1s
+units:
+  echo:
+    use: demo.echo/v1
+    spec:
+      message: hello configured plugin
+`
+	if err := os.WriteFile(scenarioPath, []byte(scenario), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"validate", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wkbench scenario is valid") {
+		t.Fatalf("unexpected stderr:\n%s", stderr.String())
+	}
+}
+
+func TestListUnitsLoadsPluginsFromProjectConfig(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", bin)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"list-units"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{"demo.echo/v1", "wkbench.demo:demo.echo/v1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list-units missing %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestConfiguredPluginPathDedupesGlobalPluginFlag(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", bin)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"-plugin", bin, "list-units"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "registration failed") {
+		t.Fatalf("duplicate plugin path should not double-register:\n%s", stderr.String())
+	}
+}
+
+func TestPluginListPrintsConfiguredPlugins(t *testing.T) {
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", "./bin/wkbench-demo-plugin")
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "list"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{"demo", "./bin/wkbench-demo-plugin"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("plugin list missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPluginDoctorHandshakesConfiguredPlugins(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", bin)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "doctor"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{"demo", "ok", "wkbench.demo", "demo.echo/v1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("plugin doctor missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPluginDoctorTimesOutHungPlugin(t *testing.T) {
+	bin := buildHungPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "hung", bin)
+
+	var stderr bytes.Buffer
+	start := time.Now()
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "doctor"}, &stderr)
+	elapsed := time.Since(start)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig for hung plugin, got %d stderr:\n%s", code, stderr.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("doctor should time out hung plugin quickly, elapsed=%s stderr:\n%s", elapsed, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "hung failed") {
+		t.Fatalf("expected hung plugin failure report, got:\n%s", stderr.String())
+	}
+}
+
+func TestPluginInspectPrintsManifestForConfiguredPlugin(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "demo", bin)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "inspect", "demo"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	for _, want := range []string{"Plugin: wkbench.demo", "Version: 0.1.0", "Units:", "demo.echo/v1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("plugin inspect missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPluginAddFromSubdirStoresPathRelativeToProjectConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	configDir := filepath.Join(projectDir, ".wkbench")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "plugins.yaml"), []byte("version: wkbench.plugins/v1\nplugins: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subdir := filepath.Join(projectDir, "tools")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, subdir, []string{"plugin", "add", "demo", "./bin/acme-plugin"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "plugins.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "path: tools/bin/acme-plugin") {
+		t.Fatalf("plugin add from subdir should store path relative to project config:\n%s", data)
+	}
+}
+
+func TestPluginAddWritesProjectConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	pluginPath := filepath.Join(projectDir, "bin", "wkbench-demo-plugin")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pluginPath, []byte("placeholder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "add", "demo", "./bin/wkbench-demo-plugin"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ".wkbench", "plugins.yaml"))
+	if err != nil {
+		t.Fatalf("plugins.yaml not written: %v", err)
+	}
+	for _, want := range []string{"plugins:", "name: demo", "path: bin/wkbench-demo-plugin"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("plugins.yaml missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestPluginManagementCommandsCanRepairMissingPluginPath(t *testing.T) {
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "missing", "./bin/missing-plugin")
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"validate", "-scenario", writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: bad-plugin-config
+units:
+  echo:
+    use: demo.echo/v1
+    spec:
+      message: hello
+`)}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("validate should fail when configured plugin path is missing, code = %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "failed to start") {
+		t.Fatalf("validate should report plugin start failure:\n%s", stderr.String())
+	}
+
+	stderr.Reset()
+	code = runInDirWithStderr(t, projectDir, []string{"plugin", "add", "fixed", "./bin/fixed-plugin"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("plugin add should still work with missing configured plugin path, code = %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "configured plugin fixed") {
+		t.Fatalf("plugin add did not report success:\n%s", stderr.String())
+	}
+
+	initDir := filepath.Join(projectDir, "generated")
+	stderr.Reset()
+	code = runInDirWithStderr(t, projectDir, []string{
+		"plugin", "init",
+		"-dir", initDir,
+		"-module", "example.com/fixed/plugin",
+		"-name", "fixed.echo",
+	}, &stderr)
+	if code != exitOK {
+		t.Fatalf("plugin init should still work with missing configured plugin path, code = %d stderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestNewUnitCommandIgnoresMissingConfiguredPluginPath(t *testing.T) {
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "missing", "./bin/missing-plugin")
+	unitDir := filepath.Join(projectDir, "units", "custom", "echo")
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{
+		"new-unit",
+		"-kind", "custom.echo/v1",
+		"-dir", unitDir,
+	}, &stderr)
+	if code != exitOK {
+		t.Fatalf("new-unit should not start configured plugins, code = %d stderr:\n%s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(unitDir, "unit.go")); err != nil {
+		t.Fatalf("unit.go not generated: %v", err)
+	}
+}
+
+func TestPluginInitGeneratesBuildableExternalPlugin(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "acme-plugin")
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{
+		"plugin", "init",
+		"-dir", dir,
+		"-module", "example.com/acme/wkbench-plugin",
+		"-name", "acme.echo",
+	}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	for _, path := range []string{
+		"go.mod",
+		filepath.Join("cmd", "acme-echo-plugin", "main.go"),
+		filepath.Join("units", "echo", "unit.go"),
+		filepath.Join("examples", "echo.yaml"),
+		"README.md",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
+			t.Fatalf("%s not generated: %v", path, err)
+		}
+	}
+	testCmd := exec.Command("go", "test", "./...")
+	testCmd.Dir = dir
+	testCmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := testCmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated plugin tests do not pass: %v\n%s", err, out)
+	}
+	bin := filepath.Join(dir, "bin", "acme-echo-plugin")
+	build := exec.Command("go", "build", "./cmd/acme-echo-plugin")
+	build.Dir = dir
+	build.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("generated plugin does not build: %v\n%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	build = exec.Command("go", "build", "-o", bin, "./cmd/acme-echo-plugin")
+	build.Dir = dir
+	build.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("generated plugin binary does not build: %v\n%s", err, out)
+	}
+	var validateStderr bytes.Buffer
+	code = runWithStderr([]string{"-plugin", bin, "validate", "-scenario", filepath.Join(dir, "examples", "echo.yaml")}, &validateStderr)
+	if code != exitOK {
+		t.Fatalf("generated plugin scenario does not validate, code = %d stderr:\n%s", code, validateStderr.String())
+	}
+}
+
 func buildDemoPlugin(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "wkbench-demo-plugin")
@@ -436,6 +742,31 @@ func main() {
 		t.Fatalf("build tracking plugin: %v\n%s", err, out)
 	}
 	return bin, closedPath
+}
+
+func buildHungPlugin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.go")
+	source := `package main
+
+import "time"
+
+func main() {
+	time.Sleep(5 * time.Second)
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "wkbench-hung-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, sourcePath)
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build hung plugin: %v\n%s", err, out)
+	}
+	return bin
 }
 
 func waitForFile(t *testing.T, path string) {
@@ -793,4 +1124,33 @@ func writeScenarioFile(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return scenarioPath
+}
+
+func runInDirWithStderr(t *testing.T, dir string, args []string, stderr *bytes.Buffer) int {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(old); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	return runWithStderr(args, stderr)
+}
+
+func writePluginConfig(t *testing.T, projectDir, name, path string) {
+	t.Helper()
+	configDir := filepath.Join(projectDir, ".wkbench")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf("plugins:\n  - name: %s\n    path: %s\n", name, path)
+	if err := os.WriteFile(filepath.Join(configDir, "plugins.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

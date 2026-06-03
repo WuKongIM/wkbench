@@ -2,8 +2,9 @@
 
 `wkbench` plugins are executable programs that expose benchmark units through
 the `wkbench.plugin/v1` frame protocol over stdin and stdout. The host starts
-the executable passed with `-plugin`, performs a handshake, lists units, and
-then calls `Validate`, `Plan`, and `Run` over the same stdio frame stream.
+executables passed with `-plugin` or configured in `.wkbench/plugins.yaml`,
+performs a handshake, lists units, and then calls `Validate`, `Plan`, and
+`Run` over the same stdio frame stream.
 
 Go plugins use the same `contract.Unit` interface as in-process units through
 `sdk/go/wkbench/plugin`.
@@ -79,6 +80,29 @@ have explicit protocol support.
 
 ## Host Usage
 
+Generate a standalone external plugin project:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plugin init \
+  -dir /tmp/acme-wkbench-plugin \
+  -module example.com/acme/wkbench-plugin \
+  -name acme.echo
+cd /tmp/acme-wkbench-plugin
+go test ./...
+go build -o ./bin/acme-echo-plugin ./cmd/acme-echo-plugin
+```
+
+Register it in a wkbench project:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plugin add acme.echo /tmp/acme-wkbench-plugin/bin/acme-echo-plugin
+GOWORK=off go run ./cmd/wkbench plugin list
+GOWORK=off go run ./cmd/wkbench plugin doctor
+```
+
+After registration, `list-units`, `validate`, `explain`, `plan`, and `run`
+automatically load enabled plugins from `.wkbench/plugins.yaml`.
+
 Build and load the demo plugin:
 
 ```bash
@@ -101,6 +125,38 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-official-data-plugin valida
 ```
 
 `-plugin` is a global CLI flag and may be repeated before the subcommand.
+It is merged with `.wkbench/plugins.yaml`; duplicate executable paths are
+loaded once.
+
+## Project Plugin Config
+
+`wkbench` discovers project plugin config by walking upward from the current
+directory to `.wkbench/plugins.yaml`.
+
+```yaml
+version: wkbench.plugins/v1
+plugins:
+  - name: acme.echo
+    path: /tmp/acme-wkbench-plugin/bin/acme-echo-plugin
+    enabled: true
+```
+
+Relative plugin paths are resolved from the project directory containing
+`.wkbench`. `enabled` defaults to true when omitted.
+
+Management commands do not all start plugins:
+
+- `wkbench plugin list` prints configured plugins without starting them.
+- `wkbench plugin add <name> <path>` creates or updates `.wkbench/plugins.yaml`.
+- `wkbench plugin init -dir <dir> -module <module> -name <name>` generates a
+  standalone Go plugin module.
+- `wkbench plugin doctor` starts enabled configured plugins, performs the
+  handshake, and reports manifest/unit status.
+- `wkbench plugin inspect <name-or-path>` prints one plugin manifest.
+
+`plugin add`, `plugin init`, and `plugin list` are safe to run even when an
+existing configured plugin path is missing. Use `plugin doctor` when you want
+to check the executable and manifest.
 
 ## Scenario YAML
 

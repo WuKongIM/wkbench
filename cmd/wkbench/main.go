@@ -58,7 +58,7 @@ func parseGlobalArgs(args []string, stderr io.Writer) (cliConfig, int) {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench [-plugin path] <list-units|new-unit|explain|plan|validate|run>")
+		fmt.Fprintln(stderr, "usage: wkbench [-plugin path] <list-units|plugin|new-unit|explain|plan|validate|run>")
 		return cliConfig{}, exitConfig
 	}
 	return cliConfig{Plugins: plugins, Command: rest[0], Args: rest[1:]}, exitOK
@@ -80,8 +80,18 @@ func runWithStderr(args []string, stderr io.Writer) int {
 	if code != exitOK {
 		return code
 	}
+	if cfg.Command == "plugin" {
+		return runPluginCommand(cfg.Args, stderr)
+	}
+	if cfg.Command == "new-unit" {
+		return runNewUnit(cfg.Args, stderr)
+	}
 	reg := defaultRegistry()
-	clients, code := loadExternalPlugins(reg, cfg.Plugins, stderr)
+	pluginPaths, code := loadConfiguredPluginPaths(cfg.Plugins, stderr)
+	if code != exitOK {
+		return code
+	}
+	clients, code := loadExternalPlugins(reg, pluginPaths, stderr)
 	if code != exitOK {
 		return code
 	}
@@ -89,8 +99,6 @@ func runWithStderr(args []string, stderr io.Writer) int {
 	switch cfg.Command {
 	case "list-units":
 		return runListUnits(reg, stderr)
-	case "new-unit":
-		return runNewUnit(cfg.Args, stderr)
 	case "explain":
 		return runExplain(reg, cfg.Args, stderr)
 	case "plan":
@@ -147,6 +155,9 @@ func loadExternalPlugins(reg *registry.Registry, paths []string, stderr io.Write
 			return nil, exitConfig
 		}
 		loaded = append(loaded, loadedPlugin{path: path, client: client, manifest: manifest})
+		if loaded[len(loaded)-1].manifest.Source == "" {
+			loaded[len(loaded)-1].manifest.Source = path
+		}
 		for _, unit := range manifest.Units {
 			bareKindCounts[unit.Kind]++
 		}

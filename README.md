@@ -38,8 +38,24 @@ GOWORK=off go run ./cmd/wkbench list-units
 
 ## External Plugins
 
-Phase 1 supports loading external plugin executables with the global `-plugin`
-flag:
+External plugins are standalone executables. Generate a starter plugin, build
+it, register it in `.wkbench/plugins.yaml`, then run normal scenarios:
+
+```bash
+GOWORK=off go run ./cmd/wkbench plugin init \
+  -dir /tmp/acme-wkbench-plugin \
+  -module example.com/acme/wkbench-plugin \
+  -name acme.echo
+cd /tmp/acme-wkbench-plugin
+go test ./...
+go build -o ./bin/acme-echo-plugin ./cmd/acme-echo-plugin
+cd -
+GOWORK=off go run ./cmd/wkbench plugin add acme.echo /tmp/acme-wkbench-plugin/bin/acme-echo-plugin
+GOWORK=off go run ./cmd/wkbench plugin doctor
+GOWORK=off go run ./cmd/wkbench list-units
+```
+
+You can still load a plugin for one command with the global `-plugin` flag:
 
 ```bash
 GOWORK=off go build -o /tmp/wkbench-demo-plugin ./plugins/demo/cmd/wkbench-demo-plugin
@@ -49,11 +65,13 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin run -scenario .
 ```
 
 Scenario YAML can reference external units as `<plugin-name>:<kind>`, for
-example `wkbench.demo:demo.echo/v1`. During Phase 1, official units still run
-in-process while external plugin units are registered as remote proxies. The
-final architecture will remove direct unit registration from the host binary
-after migration. See [docs/plugin-authoring.md](docs/plugin-authoring.md) for
-authoring details and Phase 1 limits.
+example `wkbench.demo:demo.echo/v1`. `list-units`, `validate`, `explain`,
+`plan`, and `run` automatically load enabled project plugins. During Phase 1,
+official units still run in-process while external plugin units are registered
+as remote proxies. The final architecture will remove direct unit registration
+from the host binary after migration. See
+[docs/plugin-authoring.md](docs/plugin-authoring.md) for authoring details,
+plugin config, and Phase 1 limits.
 
 Create a new unit skeleton:
 
