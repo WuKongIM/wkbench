@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -23,7 +24,14 @@ type StdioClient struct {
 	ioMu      sync.Mutex
 	closeOnce sync.Once
 	closeErr  error
+	waitOnce  sync.Once
+	waitCh    chan error
+	stateMu   sync.Mutex
+	closed    bool
+	killed    bool
 }
+
+var errStdioClientClosed = errors.New("stdio plugin client closed")
 
 func StartStdioClient(ctx context.Context, path string) (*StdioClient, error) {
 	cmd := exec.CommandContext(ctx, path)
@@ -45,15 +53,24 @@ func StartStdioClient(ctx context.Context, path string) (*StdioClient, error) {
 		stdin:  stdin,
 		reader: protocol.NewFrameReader(stdout, 16<<20),
 		writer: protocol.NewFrameWriter(stdin),
+		waitCh: make(chan error, 1),
 	}
 	return client, nil
 }
 
 func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
-	_ = ctx
 	const requestID = "handshake"
+	if err := ctx.Err(); err != nil {
+		c.shutdown(true)
+		c.startWait()
+		return Plugin{}, err
+	}
+
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()
+	if c.isClosed() {
+		return Plugin{}, errStdioClientClosed
+	}
 
 	if err := c.writer.WriteFrame(&protocol.Frame{
 		RequestId: requestID,
@@ -66,7 +83,20 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		return Plugin{}, fmt.Errorf("write handshake request: %w", err)
 	}
 
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.shutdown(true)
+			c.startWait()
+		case <-readDone:
+		}
+	}()
 	frame, err := c.reader.ReadFrame()
+	close(readDone)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Plugin{}, fmt.Errorf("handshake canceled: %w", ctxErr)
+	}
 	if err != nil {
 		return Plugin{}, fmt.Errorf("read handshake response: %w", err)
 	}
@@ -95,31 +125,59 @@ func (c *StdioClient) Close() error {
 }
 
 func (c *StdioClient) close() error {
-	_ = c.stdin.Close()
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- c.cmd.Wait()
-	}()
+	c.shutdown(false)
+	done := c.startWait()
 
 	select {
 	case err := <-done:
-		if err != nil {
+		if err != nil && !c.wasKilled() {
 			return fmt.Errorf("wait plugin: %w", err)
 		}
 		return nil
 	case <-time.After(2 * time.Second):
-		if c.cmd.Process != nil {
-			_ = c.cmd.Process.Kill()
-		}
+		c.shutdown(true)
 		err := <-done
-		if err != nil {
+		if err != nil && !c.wasKilled() {
 			return fmt.Errorf("plugin did not exit after stdin close: %w", err)
 		}
-		return fmt.Errorf("plugin did not exit after stdin close")
+		return nil
 	}
+}
+
+func (c *StdioClient) shutdown(kill bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+
+	if kill && !c.killed && c.cmd.Process != nil {
+		if err := c.cmd.Process.Kill(); err == nil {
+			c.killed = true
+		}
+	}
+	if !c.closed {
+		_ = c.stdin.Close()
+		c.closed = true
+	}
+}
+
+func (c *StdioClient) startWait() <-chan error {
+	c.waitOnce.Do(func() {
+		go func() {
+			c.waitCh <- c.cmd.Wait()
+		}()
+	})
+	return c.waitCh
+}
+
+func (c *StdioClient) isClosed() bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.closed
+}
+
+func (c *StdioClient) wasKilled() bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.killed
 }
 
 func pluginFromProto(manifest *protocol.PluginManifest) Plugin {

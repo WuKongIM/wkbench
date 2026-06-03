@@ -2,10 +2,13 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestStdioClientListsDemoPluginUnits(t *testing.T) {
@@ -33,28 +36,32 @@ func TestStdioClientListsDemoPluginUnits(t *testing.T) {
 	}
 }
 
-func TestStdioClientHandshakeIgnoresCanceledContext(t *testing.T) {
-	bin := buildDemoPlugin(t)
+func TestStdioClientCanceledHandshakeStopsHungPlugin(t *testing.T) {
+	bin := writeSleepPlugin(t, 2*time.Second)
 
 	client, err := StartStdioClient(context.Background(), bin)
 	if err != nil {
 		t.Fatalf("start client: %v", err)
 	}
-	defer func() {
-		if err := client.Close(); err != nil {
-			t.Fatalf("close client: %v", err)
-		}
-	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
 
-	manifest, err := client.Handshake(ctx)
-	if err != nil {
-		t.Fatalf("handshake with canceled context: %v", err)
+	start := time.Now()
+	_, err = client.Handshake(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handshake error = %v, want context deadline exceeded", err)
 	}
-	if manifest.Name != "wkbench.demo" {
-		t.Fatalf("Name = %q", manifest.Name)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("handshake returned after %s, want prompt cancellation", elapsed)
+	}
+
+	closeStart := time.Now()
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+	if elapsed := time.Since(closeStart); elapsed > time.Second {
+		t.Fatalf("close returned after %s, want prompt close", elapsed)
 	}
 }
 
@@ -68,6 +75,20 @@ func buildDemoPlugin(t *testing.T) string {
 		t.Fatalf("build plugin: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func writeSleepPlugin(t *testing.T, delay time.Duration) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wkbench-sleep-plugin")
+	seconds := int(delay / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	body := "#!/bin/sh\nsleep " + strconv.Itoa(seconds) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write sleep plugin: %v", err)
+	}
+	return path
 }
 
 func repoRoot(t *testing.T) string {
