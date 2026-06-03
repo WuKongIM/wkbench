@@ -178,6 +178,41 @@ func TestRunExternalPluginScenario(t *testing.T) {
 	}
 }
 
+func TestRunExternalPluginScenarioWritesReportableOutput(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	dir := t.TempDir()
+	reportDir := filepath.Join(dir, "report")
+	scenarioPath := filepath.Join(dir, "plugin-echo.yaml")
+	scenario := `
+version: wkbench/v2
+run:
+  id: plugin-echo-report
+  duration: 1s
+  report_dir: ` + reportDir + `
+units:
+  echo:
+    use: demo.echo/v1
+    spec:
+      message: hello from plugin report
+`
+	if err := os.WriteFile(scenarioPath, []byte(scenario), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"-plugin", bin, "run", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("code = %d, stderr:\n%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, "report.json"))
+	if err != nil {
+		t.Fatalf("read report.json: %v", err)
+	}
+	if !strings.Contains(string(data), "hello from plugin report") {
+		t.Fatalf("report.json missing remote output value:\n%s", data)
+	}
+}
+
 func TestListUnitsClosesExternalPluginClient(t *testing.T) {
 	bin, closedPath := buildTrackingDemoPlugin(t)
 	var stderr bytes.Buffer

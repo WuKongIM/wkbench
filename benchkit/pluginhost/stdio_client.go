@@ -342,10 +342,22 @@ func setOutputFromFrame(env contract.RunEnv, output *protocol.SetOutput) error {
 			return fmt.Errorf("decode output %q json: %w", output.GetName(), err)
 		}
 	}
-	if err := env.SetOutput(output.GetName(), decoded); err != nil {
+	stored := decoded
+	if value.GetReportable() && !value.GetSensitive() {
+		stored = remoteReportableOutput{value: decoded}
+	}
+	if err := env.SetOutput(output.GetName(), stored); err != nil {
 		return fmt.Errorf("set output %q: %w", output.GetName(), err)
 	}
 	return nil
+}
+
+type remoteReportableOutput struct {
+	value any
+}
+
+func (o remoteReportableOutput) ReportOutput() any {
+	return o.value
 }
 
 func pluginRPCError(err *protocol.Error) error {

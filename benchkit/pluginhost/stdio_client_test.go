@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
 )
 
 func TestStdioClientListsDemoPluginUnits(t *testing.T) {
@@ -82,12 +83,69 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	if !ok {
 		t.Fatal("missing result output")
 	}
-	result, ok := output.(map[string]any)
+	reportable, ok := output.(contract.ReportableOutput)
 	if !ok {
-		t.Fatalf("result type = %T, want map[string]any", output)
+		t.Fatalf("result type = %T, want contract.ReportableOutput", output)
+	}
+	result, ok := reportable.ReportOutput().(map[string]any)
+	if !ok {
+		t.Fatalf("report output type = %T, want map[string]any", reportable.ReportOutput())
 	}
 	if result["message"] != "hello from stdio" {
 		t.Fatalf("result message = %#v", result["message"])
+	}
+}
+
+func TestSetOutputFromFrameKeepsNonReportableOutputPlain(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "unit", nil, nil)
+
+	if err := setOutputFromFrame(env, &protocol.SetOutput{
+		Name: "result",
+		Value: &protocol.PortValue{
+			Encoding: "json",
+			Payload:  []byte(`{"message":"hidden"}`),
+		},
+	}); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+
+	output, ok := env.Output("result")
+	if !ok {
+		t.Fatal("missing result output")
+	}
+	if _, ok := output.(contract.ReportableOutput); ok {
+		t.Fatalf("non-reportable output implements ReportableOutput: %T", output)
+	}
+	result, ok := output.(map[string]any)
+	if !ok {
+		t.Fatalf("output type = %T, want map[string]any", output)
+	}
+	if result["message"] != "hidden" {
+		t.Fatalf("message = %#v", result["message"])
+	}
+}
+
+func TestSetOutputFromFrameDoesNotExposeSensitiveReportableOutput(t *testing.T) {
+	env := contract.NewTestRunEnv("run-1", "unit", nil, nil)
+
+	if err := setOutputFromFrame(env, &protocol.SetOutput{
+		Name: "secret",
+		Value: &protocol.PortValue{
+			Encoding:   "json",
+			Reportable: true,
+			Sensitive:  true,
+			Payload:    []byte(`{"token":"secret"}`),
+		},
+	}); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+
+	output, ok := env.Output("secret")
+	if !ok {
+		t.Fatal("missing secret output")
+	}
+	if _, ok := output.(contract.ReportableOutput); ok {
+		t.Fatalf("sensitive output implements ReportableOutput: %T", output)
 	}
 }
 
