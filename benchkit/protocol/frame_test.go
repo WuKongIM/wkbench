@@ -49,6 +49,22 @@ func TestFrameReaderRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestFrameReaderRejectsNegativeMaxBytes(t *testing.T) {
+	var buf bytes.Buffer
+	writer := NewFrameWriter(&buf)
+	if err := writer.WriteFrame(&Frame{RequestId: "negative-max", Body: &Frame_Error{Error: &Error{Message: "payload"}}}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader := NewFrameReader(&buf, -1)
+	_, err := reader.ReadFrame()
+	if err == nil {
+		t.Fatal("expected oversized frame error")
+	}
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("error = %v, want ErrFrameTooLarge", err)
+	}
+}
+
 func TestFrameReaderReturnsEOF(t *testing.T) {
 	reader := NewFrameReader(bytes.NewReader(nil), 1024)
 	_, err := reader.ReadFrame()

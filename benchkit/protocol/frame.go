@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -24,6 +25,9 @@ func (w *FrameWriter) WriteFrame(frame *Frame) error {
 	if err != nil {
 		return fmt.Errorf("marshal frame: %w", err)
 	}
+	if uint64(len(payload)) > math.MaxUint32 {
+		return ErrFrameTooLarge
+	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
 	if _, err := w.w.Write(header[:]); err != nil {
@@ -37,11 +41,11 @@ func (w *FrameWriter) WriteFrame(frame *Frame) error {
 
 type FrameReader struct {
 	r        io.Reader
-	maxBytes uint32
+	maxBytes int
 }
 
 func NewFrameReader(r io.Reader, maxBytes int) *FrameReader {
-	return &FrameReader{r: r, maxBytes: uint32(maxBytes)}
+	return &FrameReader{r: r, maxBytes: maxBytes}
 }
 
 func (r *FrameReader) ReadFrame() (*Frame, error) {
@@ -50,7 +54,7 @@ func (r *FrameReader) ReadFrame() (*Frame, error) {
 		return nil, err
 	}
 	size := binary.BigEndian.Uint32(header[:])
-	if size > r.maxBytes {
+	if r.maxBytes < 0 || uint64(size) > uint64(r.maxBytes) {
 		return nil, ErrFrameTooLarge
 	}
 	payload := make([]byte, size)
