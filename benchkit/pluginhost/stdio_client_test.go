@@ -110,6 +110,55 @@ func main() {
 	}
 }
 
+func TestStdioClientRequestWaiterSurvivesRepeatedCalls(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type unit struct{}
+
+func (unit) Definition() contract.Definition { return contract.Definition{Kind: "test.waiter/v1"} }
+func (unit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (unit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{UnitName: "planned"}, nil
+}
+func (unit) Run(context.Context, contract.RunEnv) error { return nil }
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "waiter", Version: "dev", Units: []contract.Unit{unit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Handshake(context.Background()); err != nil {
+		t.Fatalf("handshake 1: %v", err)
+	}
+	if _, err := client.Handshake(context.Background()); err != nil {
+		t.Fatalf("handshake 2: %v", err)
+	}
+	if err := client.Validate(context.Background(), UnitRequest{
+		UnitName: "unit",
+		Kind:     "test.waiter/v1",
+		SpecJSON: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
 func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	bin := buildDemoPlugin(t)
 
@@ -348,8 +397,9 @@ func TestArtifactFrameHandlerRejectsUnknownHandle(t *testing.T) {
 func TestWriteRunArtifactErrorSendsProtocolErrorFrame(t *testing.T) {
 	var out bytes.Buffer
 	sourceErr := errors.New("report_dir is required")
+	writer := protocol.NewFrameWriter(&out)
 
-	err := writeRunArtifactError(protocol.NewFrameWriter(&out), "run-1", "scenario-1", "echo", sourceErr)
+	err := writeRunArtifactError(writer.WriteFrame, "run-1", "scenario-1", "echo", sourceErr)
 	if err == nil || !strings.Contains(err.Error(), sourceErr.Error()) {
 		t.Fatalf("error = %v, want source error", err)
 	}

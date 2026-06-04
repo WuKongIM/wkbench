@@ -19,10 +19,9 @@ type StdioClient struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	reader *protocol.FrameReader
 	writer *protocol.FrameWriter
 
-	ioMu      sync.Mutex
+	writeMu   sync.Mutex
 	closeOnce sync.Once
 	closeErr  error
 	waitOnce  sync.Once
@@ -31,6 +30,11 @@ type StdioClient struct {
 	closed    bool
 	killed    bool
 	nextSeq   int64
+
+	pumpDone chan error
+	reqMu    sync.Mutex
+	waiters  map[string]chan readResult
+	bgTasks  map[string]*remoteBackgroundTask
 }
 
 var errStdioClientClosed = errors.New("stdio plugin client closed")
@@ -39,6 +43,8 @@ type readResult struct {
 	frame *protocol.Frame
 	err   error
 }
+
+type remoteBackgroundTask struct{}
 
 type StdioCommand struct {
 	Path string
@@ -64,14 +70,42 @@ func StartStdioCommand(ctx context.Context, command StdioCommand) (*StdioClient,
 		return nil, fmt.Errorf("start plugin: %w", err)
 	}
 
+	reader := protocol.NewFrameReader(stdout, 16<<20)
 	client := &StdioClient{
-		cmd:    cmd,
-		stdin:  stdin,
-		reader: protocol.NewFrameReader(stdout, 16<<20),
-		writer: protocol.NewFrameWriter(stdin),
-		waitCh: make(chan error, 1),
+		cmd:      cmd,
+		stdin:    stdin,
+		writer:   protocol.NewFrameWriter(stdin),
+		waitCh:   make(chan error, 1),
+		pumpDone: make(chan error, 1),
+		waiters:  make(map[string]chan readResult),
+		bgTasks:  make(map[string]*remoteBackgroundTask),
 	}
+	go client.readLoop(reader)
 	return client, nil
+}
+
+func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
+	for {
+		frame, err := reader.ReadFrame()
+		if err != nil {
+			c.failAllWaiters(err)
+			c.failAllBackgroundTasks(fmt.Errorf("read plugin frame: %w", err))
+			c.pumpDone <- err
+			return
+		}
+		if event := frame.GetBackgroundEvent(); event != nil {
+			c.dispatchBackgroundEvent(event)
+			continue
+		}
+		c.reqMu.Lock()
+		waiter := c.waiters[frame.GetRequestId()]
+		c.reqMu.Unlock()
+		if waiter == nil {
+			c.failAllBackgroundTasks(fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId()))
+			continue
+		}
+		waiter <- readResult{frame: frame}
+	}
 }
 
 func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
@@ -82,13 +116,9 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		return Plugin{}, err
 	}
 
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
-	if c.isClosed() {
-		return Plugin{}, errStdioClientClosed
-	}
-
-	if err := c.writer.WriteFrame(&protocol.Frame{
+	waiter := c.registerWaiter(requestID)
+	defer c.unregisterWaiter(requestID)
+	if err := c.writeFrame(&protocol.Frame{
 		RequestId: requestID,
 		Body: &protocol.Frame_HandshakeRequest{HandshakeRequest: &protocol.HandshakeRequest{
 			HostProtocol: "wkbench.plugin/v1",
@@ -99,22 +129,9 @@ func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
 		return Plugin{}, fmt.Errorf("write handshake request: %w", err)
 	}
 
-	readResultCh := make(chan readResult, 1)
-	go func() {
-		frame, err := c.reader.ReadFrame()
-		readResultCh <- readResult{frame: frame, err: err}
-	}()
-
-	result, canceled, ctxErr := waitForFrame(ctx, readResultCh)
-	if canceled {
-		c.shutdown(true)
-		c.startWait()
-		<-readResultCh
-		return Plugin{}, fmt.Errorf("handshake canceled: %w", ctxErr)
-	}
-	frame, err := result.frame, result.err
+	frame, err := c.waitForRequestFrame(ctx, waiter, "handshake")
 	if err != nil {
-		return Plugin{}, fmt.Errorf("read handshake response: %w", err)
+		return Plugin{}, err
 	}
 	if frame.GetRequestId() != requestID {
 		return Plugin{}, fmt.Errorf("handshake response request id = %q, want %q", frame.GetRequestId(), requestID)
@@ -140,12 +157,6 @@ func (c *StdioClient) Validate(ctx context.Context, req UnitRequest) error {
 		return err
 	}
 
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
-	if c.isClosed() {
-		return errStdioClientClosed
-	}
-
 	requestID := c.nextRequestID("validate")
 	frame := &protocol.Frame{
 		RequestId:      requestID,
@@ -157,9 +168,17 @@ func (c *StdioClient) Validate(ctx context.Context, req UnitRequest) error {
 			SpecJson: req.SpecJSON,
 		}},
 	}
-	response, err := c.writeRequestAndReadFrame(ctx, frame, "validate")
+	waiter := c.registerWaiter(requestID)
+	defer c.unregisterWaiter(requestID)
+	if err := c.writeFrame(frame); err != nil {
+		return fmt.Errorf("write validate request: %w", err)
+	}
+	response, err := c.waitForRequestFrame(ctx, waiter, "validate")
 	if err != nil {
 		return err
+	}
+	if response.GetRequestId() != requestID {
+		return fmt.Errorf("validate response request id = %q, want %q", response.GetRequestId(), requestID)
 	}
 	if rpcErr := response.GetError(); rpcErr != nil {
 		return pluginRPCError(rpcErr)
@@ -177,12 +196,6 @@ func (c *StdioClient) Plan(ctx context.Context, req UnitRequest) (contract.Plan,
 		return contract.Plan{}, err
 	}
 
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
-	if c.isClosed() {
-		return contract.Plan{}, errStdioClientClosed
-	}
-
 	requestID := c.nextRequestID("plan")
 	frame := &protocol.Frame{
 		RequestId:      requestID,
@@ -197,9 +210,17 @@ func (c *StdioClient) Plan(ctx context.Context, req UnitRequest) (contract.Plan,
 			SpecJson:          req.SpecJSON,
 		}},
 	}
-	response, err := c.writeRequestAndReadFrame(ctx, frame, "plan")
+	waiter := c.registerWaiter(requestID)
+	defer c.unregisterWaiter(requestID)
+	if err := c.writeFrame(frame); err != nil {
+		return contract.Plan{}, fmt.Errorf("write plan request: %w", err)
+	}
+	response, err := c.waitForRequestFrame(ctx, waiter, "plan")
 	if err != nil {
 		return contract.Plan{}, err
+	}
+	if response.GetRequestId() != requestID {
+		return contract.Plan{}, fmt.Errorf("plan response request id = %q, want %q", response.GetRequestId(), requestID)
 	}
 	if rpcErr := response.GetError(); rpcErr != nil {
 		return contract.Plan{}, pluginRPCError(rpcErr)
@@ -229,14 +250,8 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		return err
 	}
 
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
-	if c.isClosed() {
-		return errStdioClientClosed
-	}
-
 	requestID := c.nextRequestID("run")
-	if err := c.writer.WriteFrame(&protocol.Frame{
+	runFrame := &protocol.Frame{
 		RequestId:      requestID,
 		RunId:          req.RunID,
 		UnitInstanceId: req.UnitName,
@@ -249,7 +264,10 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 			SpecJson:          req.SpecJSON,
 			Inputs:            inputs,
 		}},
-	}); err != nil {
+	}
+	waiter := c.registerWaiter(requestID)
+	defer c.unregisterWaiter(requestID)
+	if err := c.writeFrame(runFrame); err != nil {
 		return fmt.Errorf("write run request: %w", err)
 	}
 
@@ -257,7 +275,7 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 	defer artifacts.closeAll()
 
 	for {
-		frame, err := c.readFrame(ctx, "run")
+		frame, err := c.waitForRequestFrame(ctx, waiter, "run")
 		if err != nil {
 			return err
 		}
@@ -274,9 +292,9 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		case *protocol.Frame_ArtifactOpen:
 			opened, err := artifacts.open(body.ArtifactOpen)
 			if err != nil {
-				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
 			}
-			if err := c.writer.WriteFrame(&protocol.Frame{
+			if err := c.writeFrame(&protocol.Frame{
 				RequestId:      requestID,
 				RunId:          req.RunID,
 				UnitInstanceId: req.UnitName,
@@ -286,14 +304,14 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 			}
 		case *protocol.Frame_ArtifactChunk:
 			if err := artifacts.write(body.ArtifactChunk); err != nil {
-				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
 			}
 		case *protocol.Frame_ArtifactClose:
 			closed, err := artifacts.close(body.ArtifactClose)
 			if err != nil {
-				return writeRunArtifactError(c.writer, requestID, req.RunID, req.UnitName, err)
+				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
 			}
-			if err := c.writer.WriteFrame(&protocol.Frame{
+			if err := c.writeFrame(&protocol.Frame{
 				RequestId:      requestID,
 				RunId:          req.RunID,
 				UnitInstanceId: req.UnitName,
@@ -317,8 +335,8 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 	}
 }
 
-func writeRunArtifactError(writer *protocol.FrameWriter, requestID, runID, unitName string, err error) error {
-	if writeErr := writer.WriteFrame(&protocol.Frame{
+func writeRunArtifactError(write func(*protocol.Frame) error, requestID, runID, unitName string, err error) error {
+	if writeErr := write(&protocol.Frame{
 		RequestId:      requestID,
 		RunId:          runID,
 		UnitInstanceId: unitName,
@@ -332,10 +350,72 @@ func writeRunArtifactError(writer *protocol.FrameWriter, requestID, runID, unitN
 	return err
 }
 
+func (c *StdioClient) registerWaiter(requestID string) chan readResult {
+	ch := make(chan readResult, 16)
+	c.reqMu.Lock()
+	c.waiters[requestID] = ch
+	c.reqMu.Unlock()
+	return ch
+}
+
+func (c *StdioClient) unregisterWaiter(requestID string) {
+	c.reqMu.Lock()
+	delete(c.waiters, requestID)
+	c.reqMu.Unlock()
+}
+
+func (c *StdioClient) failAllWaiters(err error) {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+	for requestID, waiter := range c.waiters {
+		delete(c.waiters, requestID)
+		waiter <- readResult{err: err}
+		close(waiter)
+	}
+}
+
 func (c *StdioClient) nextRequestID(prefix string) string {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	c.nextSeq++
 	return fmt.Sprintf("%s-%d", prefix, c.nextSeq)
 }
+
+func (c *StdioClient) writeFrame(frame *protocol.Frame) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.isClosed() {
+		return errStdioClientClosed
+	}
+	return c.writer.WriteFrame(frame)
+}
+
+func (c *StdioClient) waitForRequestFrame(ctx context.Context, waiter <-chan readResult, op string) (*protocol.Frame, error) {
+	select {
+	case result := <-waiter:
+		if result.err != nil {
+			return nil, fmt.Errorf("read %s response: %w", op, result.err)
+		}
+		return result.frame, nil
+	default:
+	}
+
+	select {
+	case result := <-waiter:
+		if result.err != nil {
+			return nil, fmt.Errorf("read %s response: %w", op, result.err)
+		}
+		return result.frame, nil
+	case <-ctx.Done():
+		c.shutdown(true)
+		c.startWait()
+		return nil, fmt.Errorf("%s canceled: %w", op, ctx.Err())
+	}
+}
+
+func (c *StdioClient) dispatchBackgroundEvent(*protocol.BackgroundEvent) {}
+
+func (c *StdioClient) failAllBackgroundTasks(error) {}
 
 type runArtifactState struct {
 	env     contract.RunEnv
@@ -410,40 +490,6 @@ func (s *runArtifactState) closeAll() {
 		_ = writer.writer.Close()
 		delete(s.writers, handle)
 	}
-}
-
-func (c *StdioClient) writeRequestAndReadFrame(ctx context.Context, frame *protocol.Frame, op string) (*protocol.Frame, error) {
-	if err := c.writer.WriteFrame(frame); err != nil {
-		return nil, fmt.Errorf("write %s request: %w", op, err)
-	}
-	response, err := c.readFrame(ctx, op)
-	if err != nil {
-		return nil, err
-	}
-	if response.GetRequestId() != frame.GetRequestId() {
-		return nil, fmt.Errorf("%s response request id = %q, want %q", op, response.GetRequestId(), frame.GetRequestId())
-	}
-	return response, nil
-}
-
-func (c *StdioClient) readFrame(ctx context.Context, op string) (*protocol.Frame, error) {
-	readResultCh := make(chan readResult, 1)
-	go func() {
-		frame, err := c.reader.ReadFrame()
-		readResultCh <- readResult{frame: frame, err: err}
-	}()
-
-	result, canceled, ctxErr := waitForFrame(ctx, readResultCh)
-	if canceled {
-		c.shutdown(true)
-		c.startWait()
-		<-readResultCh
-		return nil, fmt.Errorf("%s canceled: %w", op, ctxErr)
-	}
-	if result.err != nil {
-		return nil, fmt.Errorf("read %s response: %w", op, result.err)
-	}
-	return result.frame, nil
 }
 
 func encodeInputPortValues(defs []contract.PortDef, sourceDefs map[string]contract.PortDef, inputs map[string]any) (map[string]*protocol.PortValue, error) {
@@ -596,26 +642,6 @@ func pluginRPCError(err *protocol.Error) error {
 	return fmt.Errorf("plugin error %s: %s", err.GetCode(), err.GetMessage())
 }
 
-func waitForFrame(ctx context.Context, readResultCh <-chan readResult) (readResult, bool, error) {
-	select {
-	case result := <-readResultCh:
-		return result, false, nil
-	default:
-	}
-
-	select {
-	case result := <-readResultCh:
-		return result, false, nil
-	case <-ctx.Done():
-		select {
-		case result := <-readResultCh:
-			return result, false, nil
-		default:
-			return readResult{}, true, ctx.Err()
-		}
-	}
-}
-
 func (c *StdioClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = c.close()
@@ -632,15 +658,19 @@ func (c *StdioClient) close() error {
 		if err != nil && !c.wasKilled() {
 			return fmt.Errorf("wait plugin: %w", err)
 		}
-		return nil
 	case <-time.After(2 * time.Second):
 		c.shutdown(true)
 		err := <-done
 		if err != nil && !c.wasKilled() {
 			return fmt.Errorf("plugin did not exit after stdin close: %w", err)
 		}
-		return nil
 	}
+
+	select {
+	case <-c.pumpDone:
+	default:
+	}
+	return nil
 }
 
 func (c *StdioClient) shutdown(kill bool) {
