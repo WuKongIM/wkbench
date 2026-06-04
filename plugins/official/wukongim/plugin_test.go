@@ -10,5 +10,6 @@ func TestPluginManifest(t *testing.T) {
 	requireKinds(t, manifest.Units, []string{
 		"wukongim.target/v1",
 		"wukongim.prepare_group_channels/v1",
+		"wukongim.metrics_collector/v1",
 	})
 }

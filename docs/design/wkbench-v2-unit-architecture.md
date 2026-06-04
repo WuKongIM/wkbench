@@ -59,11 +59,11 @@ benchkit/contract
 `benchkit/kernel` must not import `units/*`. The CLI assembles a distribution by registering the units it wants to ship.
 
 The default distribution registers host-local runtime units that still require
-Go capability ports, local resources, token-source interfaces, or background
-lifecycles, and loads bundled official plugins for data and control-plane
-units. Those kind sets are intentionally disjoint. Scenario composition does
-not change: YAML refers to unit kinds and port names, while the host decides
-whether the implementation is remote or local.
+Go capability ports, local resources, or token-source interfaces, and loads
+bundled official plugins for data, control-plane, and migrated background
+units. Those kind sets are intentionally disjoint. Scenario composition does not
+change: YAML refers to unit kinds and port names, while the host decides whether
+the implementation is remote or local.
 
 ## Scenario DSL
 

@@ -132,20 +132,20 @@ loaded once.
 
 `list-units`, `validate`, `explain`, `plan`, and `run` start bundled official
 plugins by default. They use the same stdio RPC path as third-party plugins.
-The default official plugins currently expose data and control-plane units:
+The default official plugins currently expose data, control-plane, and migrated
+background units:
 
 - `wkbench.official.core`: `core.static_groups/v1`
 - `wkbench.official.identity`: `identity.pool/v1`,
   `identity.person_pairs/v1`
 - `wkbench.official.wukongim`: `wukongim.target/v1`,
-  `wukongim.prepare_group_channels/v1`
+  `wukongim.prepare_group_channels/v1`,
+  `wukongim.metrics_collector/v1`
 - `wkbench.official.report`: `report.assert/v1`
 
 The host still keeps local units whose ports are Go capabilities, local
-resources, or background lifecycles: fake senders, traffic generators,
-`wkproto.session_pool/v1`, `wukongim.prepare_tokens/v1`, and
-`wukongim.metrics_collector/v1`. These need richer RPC support before they can
-move safely.
+resources, or token-source interfaces: fake senders, traffic generators,
+`wkproto.session_pool/v1`, and `wukongim.prepare_tokens/v1`.
 
 Use `-no-official-plugins` before the command to inspect or run only the
 host-local registry:
@@ -251,7 +251,7 @@ remote metrics.
   transported in Phase 1.
 - Outputs crossing the process boundary are JSON inline values.
 - Large samples belong in artifacts, not inline outputs.
-- Official data and control-plane units now run as bundled plugins by default.
-  Capability ports, local resources, token-source interfaces, and background
-  units remain host-local until the protocol has explicit support for those
-  contracts.
+- Official data, control-plane, and migrated background units now run as
+  bundled plugins by default. Capability ports, local resources, and
+  token-source interfaces remain host-local until the protocol has explicit
+  support for those contracts.

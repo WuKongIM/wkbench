@@ -21,7 +21,6 @@ import (
 	groupsend "github.com/WuKongIM/wkbench/units/traffic/group_send"
 	sendtraffic "github.com/WuKongIM/wkbench/units/traffic/send"
 	sessionpool "github.com/WuKongIM/wkbench/units/wkproto/session_pool"
-	metricscollector "github.com/WuKongIM/wkbench/units/wukongim/metrics_collector"
 	preparetokens "github.com/WuKongIM/wkbench/units/wukongim/prepare_tokens"
 )
 
@@ -132,7 +131,6 @@ func defaultRegistry() *registry.Registry {
 	reg := registry.New()
 	fakegroupsender.Register(reg)
 	fakemessagesender.Register(reg)
-	metricscollector.Register(reg)
 	preparetokens.Register(reg)
 	sessionpool.Register(reg)
 	reg.MustRegister(groupsend.Unit{})

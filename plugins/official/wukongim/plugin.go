@@ -4,6 +4,7 @@ package wukongim
 import (
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+	metricscollector "github.com/WuKongIM/wkbench/units/wukongim/metrics_collector"
 	preparegroups "github.com/WuKongIM/wkbench/units/wukongim/prepare_group_channels"
 	wukongtarget "github.com/WuKongIM/wkbench/units/wukongim/target"
 )
@@ -16,6 +17,7 @@ func Plugin() plugin.Plugin {
 		Units: []contract.Unit{
 			wukongtarget.Unit{},
 			preparegroups.Unit{},
+			metricscollector.Unit{},
 		},
 	}
 }

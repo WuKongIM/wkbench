@@ -36,9 +36,9 @@ List built-in units:
 GOWORK=off go run ./cmd/wkbench list-units
 ```
 
-`wkbench` loads bundled official plugins by default for data and control-plane
-units. Use `-no-official-plugins` before the command when you need to inspect
-only the host-local capability/background units:
+`wkbench` loads bundled official plugins by default for data, control-plane,
+and migrated background units. Use `-no-official-plugins` before the command
+when you need to inspect only the host-local runtime units:
 
 ```bash
 GOWORK=off go run ./cmd/wkbench -no-official-plugins list-units
@@ -75,9 +75,9 @@ GOWORK=off go run ./cmd/wkbench -plugin /tmp/wkbench-demo-plugin run -scenario .
 Scenario YAML can reference external units as `<plugin-name>:<kind>`, for
 example `wkbench.demo:demo.echo/v1`. `list-units`, `validate`, `explain`,
 `plan`, and `run` automatically load bundled official plugins and enabled
-project plugins. Official data and control-plane units use the same stdio RPC
-path as third-party plugins by default; host-local units remain for capability
-ports, local resources, and background lifecycle support. See
+project plugins. Official data, control-plane, and migrated background units
+use the same stdio RPC path as third-party plugins by default; host-local units
+remain for capability ports, local resources, and token-source interfaces. See
 [docs/plugin-authoring.md](docs/plugin-authoring.md) for authoring details,
 plugin config, and Phase 1 limits.
 
@@ -96,17 +96,19 @@ GOWORK=off go test ./...
 
 ## Current Units
 
-Bundled official plugins provide these data/control-plane units by default:
+Bundled official plugins provide these data, control-plane, and background units
+by default:
 
 - `core.static_groups/v1`: produces deterministic in-memory group channels.
 - `identity.pool/v1`: produces deterministic user/device identities.
 - `identity.person_pairs/v1`: produces deterministic person-channel send targets.
 - `wukongim.target/v1`: describes and probes black-box WuKongIM endpoints.
 - `wukongim.prepare_group_channels/v1`: prepares group channels and subscribers through `/bench/v1`.
+- `wukongim.metrics_collector/v1`: scrapes target metrics as a background unit.
 - `report.assert/v1`: asserts traffic summary values.
 
 The host keeps these local until plugin RPC supports capability ports,
-token-source interfaces, local resources, and background lifecycles:
+token-source interfaces, and local resources:
 
 - `core.fake_group_sender/v1`: produces a fake WKProto group sender for examples and tests.
 - `core.fake_message_sender/v1`: produces a fake generic WKProto message sender for dry-run examples and tests.
@@ -114,7 +116,6 @@ token-source interfaces, local resources, and background lifecycles:
 - `wkproto.session_pool/v1`: opens real WKProto sessions and provides legacy `port.wkproto.group_sender/v1` senders plus generic `port.wkproto.message_sender/v1` senders for `traffic.send/v1`.
 - `traffic.group_send/v1`: sends group messages through `port.wkproto.group_sender/v1`.
 - `traffic.send/v1`: sends protocol messages through `port.wkproto.message_sender/v1` and measures `SEND -> SENDACK` latency.
-- `wukongim.metrics_collector/v1`: scrapes target metrics as a background unit.
 
 Validate the real WuKongIM example without connecting:
 

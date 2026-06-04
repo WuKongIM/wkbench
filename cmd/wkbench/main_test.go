@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,6 +163,7 @@ func TestListUnitsIncludesWuKongIMBlackBoxUnits(t *testing.T) {
 		"wkbench.official.identity:identity.pool/v1",
 		"wkbench.official.report:report.assert/v1",
 		"wkbench.official.wukongim:wukongim.target/v1",
+		"wkbench.official.wukongim:wukongim.metrics_collector/v1",
 		"wkproto.session_pool/v1",
 	} {
 		requireOutputLine(t, out, want)
@@ -179,7 +183,6 @@ func TestNoOfficialPluginsKeepsOnlyHostLocalUnits(t *testing.T) {
 		"traffic.group_send/v1",
 		"traffic.send/v1",
 		"wkproto.session_pool/v1",
-		"wukongim.metrics_collector/v1",
 		"wukongim.prepare_tokens/v1",
 	} {
 		requireOutputLine(t, out, want)
@@ -189,6 +192,7 @@ func TestNoOfficialPluginsKeepsOnlyHostLocalUnits(t *testing.T) {
 		"identity.pool/v1",
 		"identity.person_pairs/v1",
 		"report.assert/v1",
+		"wukongim.metrics_collector/v1",
 		"wukongim.target/v1",
 		"wukongim.prepare_group_channels/v1",
 	} {
@@ -1029,6 +1033,89 @@ units:
 	code := runWithStderr([]string{"validate", "-scenario", scenarioPath}, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d: %s", code, stderr.String())
+	}
+}
+
+func TestRunRemoteMetricsCollectorWithLocalMetricsServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = io.WriteString(w, "wk_active_conn_count 7\n")
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	scenarioPath := filepath.Join(dir, "remote-metrics.yaml")
+	reportDir := filepath.Join(dir, "report")
+	scenario := fmt.Sprintf(`
+version: wkbench/v2
+run:
+  id: remote-metrics-smoke
+  duration: 120ms
+  report_dir: %q
+units:
+  target:
+    use: wukongim.target
+    spec:
+      api_addrs: [%q]
+      gateway_tcp_addrs: ["127.0.0.1:0"]
+      bench_api_token: ""
+      operation_timeout: 50ms
+      skip_readiness: true
+      skip_capabilities: true
+  metrics:
+    use: wukongim.metrics_collector
+    after: [target]
+    inputs:
+      target: target.target
+    spec:
+      interval: 20ms
+      timeout: 50ms
+      path: /metrics
+      include: ["wk_active_conn_count"]
+  identities:
+    use: identity.pool
+    spec:
+      total: 2
+      uid_prefix: u
+      device_prefix: d
+  pairs:
+    use: identity.person_pairs
+    inputs:
+      identities: identities.pool
+    spec:
+      count: 1
+      mode: ring
+  sender:
+    use: core.fake_message_sender
+  traffic:
+    use: traffic.send
+    after: [metrics]
+    inputs:
+      targets: pairs.targets
+      sender: sender.sender
+    spec:
+      rate: 20/s
+      payload_size: 8
+`, reportDir, server.URL)
+	if err := os.WriteFile(scenarioPath, []byte(scenario), 0o600); err != nil {
+		t.Fatalf("write scenario: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"run", "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("run exit code = %d, stderr:\n%s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, "artifacts", "metrics", "metrics.jsonl"))
+	if err != nil {
+		t.Fatalf("read metrics artifact: %v", err)
+	}
+	if !bytes.Contains(data, []byte("wk_active_conn_count")) {
+		t.Fatalf("metrics artifact missing scraped metric:\n%s", string(data))
 	}
 }
 
