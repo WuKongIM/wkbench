@@ -40,6 +40,8 @@ type StdioClient struct {
 
 var errStdioClientClosed = errors.New("stdio plugin client closed")
 
+const remoteBackgroundStopEventGrace = 100 * time.Millisecond
+
 type readResult struct {
 	frame *protocol.Frame
 	err   error
@@ -66,9 +68,11 @@ type remoteBackgroundTask struct {
 	env            contract.RunEnv
 	artifacts      *runArtifactState
 	done           chan error
+	doneSignal     chan struct{}
 	completeOnce   sync.Once
 	cleanupOnce    sync.Once
 	completed      bool
+	doneCompleted  bool
 	stopping       bool
 }
 
@@ -120,6 +124,10 @@ func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
 			c.pumpDone <- err
 			return
 		}
+		if event := frame.GetBackgroundEvent(); event != nil {
+			c.dispatchBackgroundEvent(frame, event)
+			continue
+		}
 		c.reqMu.Lock()
 		waiter := c.waiters[frame.GetRequestId()]
 		c.reqMu.Unlock()
@@ -129,11 +137,7 @@ func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
 			}
 			continue
 		}
-		if event := frame.GetBackgroundEvent(); event != nil {
-			if c.dispatchBackgroundEvent(frame, event) {
-				continue
-			}
-		} else if c.dispatchBackgroundLifecycleFrame(frame) {
+		if c.dispatchBackgroundLifecycleFrame(frame) {
 			continue
 		}
 		protocolErr := fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId())
@@ -378,6 +382,7 @@ func (c *StdioClient) Start(ctx context.Context, req StartRequest, env contract.
 		env:            env,
 		artifacts:      newRunArtifactState(env),
 		done:           make(chan error, 1),
+		doneSignal:     make(chan struct{}),
 	}
 	c.registerBackgroundTask(task)
 	startFailed := true
@@ -435,12 +440,10 @@ func (t *remoteBackgroundTask) Stop(ctx context.Context) (err error) {
 		return nil
 	}
 	t.markStopping()
-	defer func() {
-		t.finish(err)
-	}()
 	if err := ctx.Err(); err != nil {
 		t.client.shutdown(true)
 		t.client.startWait()
+		t.finish(err)
 		return err
 	}
 
@@ -453,21 +456,31 @@ func (t *remoteBackgroundTask) Stop(ctx context.Context) (err error) {
 		UnitInstanceId: t.unitName,
 		Body:           &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: t.taskID}},
 	}); err != nil {
+		t.finish(err)
 		return fmt.Errorf("write stop request: %w", err)
 	}
 	response, err := t.client.waitForRequestFrame(ctx, waiter, "stop")
 	if err != nil {
+		t.finish(err)
 		return err
 	}
 	if response.GetRequestId() != requestID {
-		return fmt.Errorf("stop response request id = %q, want %q", response.GetRequestId(), requestID)
+		err := fmt.Errorf("stop response request id = %q, want %q", response.GetRequestId(), requestID)
+		t.finish(err)
+		return err
 	}
 	if rpcErr := response.GetError(); rpcErr != nil {
-		return pluginRPCError(rpcErr)
+		err := pluginRPCError(rpcErr)
+		t.finish(err)
+		return err
 	}
 	if response.GetStopResponse() == nil {
-		return fmt.Errorf("expected stop response frame")
+		err := fmt.Errorf("expected stop response frame")
+		t.finish(err)
+		return err
 	}
+	t.waitForStopTerminalEvent()
+	t.finish(nil)
 	return nil
 }
 
@@ -484,8 +497,12 @@ func (t *remoteBackgroundTask) finish(err error) {
 
 func (t *remoteBackgroundTask) completeDone(err error) {
 	t.completeOnce.Do(func() {
+		t.client.reqMu.Lock()
+		t.doneCompleted = true
+		t.client.reqMu.Unlock()
 		t.done <- err
 		close(t.done)
+		close(t.doneSignal)
 	})
 }
 
@@ -499,6 +516,24 @@ func (t *remoteBackgroundTask) isStopping() bool {
 	t.client.reqMu.Lock()
 	defer t.client.reqMu.Unlock()
 	return t.stopping
+}
+
+func (t *remoteBackgroundTask) isDoneCompleted() bool {
+	t.client.reqMu.Lock()
+	defer t.client.reqMu.Unlock()
+	return t.doneCompleted
+}
+
+func (t *remoteBackgroundTask) waitForStopTerminalEvent() {
+	if t.isDoneCompleted() {
+		return
+	}
+	timer := time.NewTimer(remoteBackgroundStopEventGrace)
+	defer timer.Stop()
+	select {
+	case <-t.doneSignal:
+	case <-timer.C:
+	}
 }
 
 func (c *StdioClient) handleRunLifecycleFrame(requestID, runID, unitName string, env contract.RunEnv, artifacts *runArtifactState, frame *protocol.Frame) (bool, error) {
@@ -739,10 +774,10 @@ func (c *StdioClient) backgroundTaskForStartRequest(requestID string) *remoteBac
 	return c.bgStarts[requestID]
 }
 
-func (c *StdioClient) dispatchBackgroundEvent(frame *protocol.Frame, event *protocol.BackgroundEvent) bool {
+func (c *StdioClient) dispatchBackgroundEvent(frame *protocol.Frame, event *protocol.BackgroundEvent) {
 	task := c.backgroundTaskForEvent(frame, event)
 	if task == nil {
-		return false
+		return
 	}
 	var err error
 	switch event.GetEvent() {
@@ -752,12 +787,7 @@ func (c *StdioClient) dispatchBackgroundEvent(frame *protocol.Frame, event *prot
 	default:
 		err = fmt.Errorf("unknown background event %q", event.GetEvent())
 	}
-	if task.isStopping() {
-		task.completeDone(err)
-	} else {
-		task.finish(err)
-	}
-	return true
+	task.completeDone(err)
 }
 
 func (c *StdioClient) dispatchBackgroundLifecycleFrame(frame *protocol.Frame) bool {

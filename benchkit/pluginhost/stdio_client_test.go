@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -468,6 +469,329 @@ func main() {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("background task did not receive fatal event")
+	}
+}
+
+func TestStdioClientAppliesBackgroundStopLifecycleAfterEarlyFatalEvent(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type earlyFatalBackgroundUnit struct{}
+
+func (earlyFatalBackgroundUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.remote_background_early_fatal/v1",
+		Outputs: []contract.PortDef{{Name: "summary", Type: "port.test.summary/v1"}},
+		Metrics: []contract.MetricDef{{Name: "background_ticks", Type: "counter"}},
+		Artifacts: []contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}},
+	}
+}
+func (earlyFatalBackgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (earlyFatalBackgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (earlyFatalBackgroundUnit) Run(context.Context, contract.RunEnv) error { return nil }
+func (earlyFatalBackgroundUnit) Start(_ context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	task := &earlyFatalTask{env: env, done: make(chan error, 1)}
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		task.done <- errors.New("collector failed before stop")
+		close(task.done)
+	}()
+	return task, nil
+}
+
+type earlyFatalTask struct {
+	env contract.RunEnv
+	done chan error
+}
+
+func (t *earlyFatalTask) Stop(context.Context) error {
+	if err := t.env.SetOutput("summary", map[string]any{"stopped": true}); err != nil {
+		return err
+	}
+	t.env.EmitCounter("background_ticks", 5, contract.Labels{"phase": "stop"})
+	writer, err := t.env.OpenArtifact("background.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write([]byte("{\"final\":true}\n")); err != nil {
+		return err
+	}
+	return writer.Close()
+}
+
+func (t *earlyFatalTask) Done() <-chan error { return t.done }
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "remote-background-early-fatal", Version: "dev", Units: []contract.Unit{earlyFatalBackgroundUnit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "remote-background-early-fatal",
+		UnitName:   "bg",
+		Kind:       "test.remote_background_early_fatal/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}})
+	env.SetReportDir(t.TempDir())
+
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "collector failed before stop") {
+			t.Fatalf("done error = %v, want collector failed before stop", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background task did not receive early fatal event")
+	}
+
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("stop background after fatal event: %v", err)
+	}
+	output, ok := env.Output("summary")
+	if !ok {
+		t.Fatal("missing summary output after stop")
+	}
+	summary, ok := output.(map[string]any)
+	if !ok || summary["stopped"] != true {
+		t.Fatalf("summary output = %#v", output)
+	}
+	metrics := env.MetricSnapshots()
+	if len(metrics) != 1 || metrics[0].Name != "background_ticks" || metrics[0].Sum != 5 || metrics[0].Labels["phase"] != "stop" {
+		t.Fatalf("metrics = %#v", metrics)
+	}
+	info := env.Artifacts()["background.jsonl"]
+	if info.Path == "" {
+		t.Fatalf("artifact info = %#v", info)
+	}
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(data) != "{\"final\":true}\n" {
+		t.Fatalf("artifact payload = %q", data)
+	}
+}
+
+func TestStdioClientBackgroundEventBypassesStartWaiter(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
+)
+
+func main() {
+	reader := protocol.NewFrameReader(os.Stdin, 16<<20)
+	writer := protocol.NewFrameWriter(os.Stdout)
+	for {
+		frame, err := reader.ReadFrame()
+		if err != nil {
+			return
+		}
+		switch frame.Body.(type) {
+		case *protocol.Frame_StartRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_StartResponse{StartResponse: &protocol.StartResponse{TaskId: "bg-1"}},
+			}); err != nil {
+				return
+			}
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_BackgroundEvent{BackgroundEvent: &protocol.BackgroundEvent{
+					TaskId: "bg-1",
+					Event: "fatal_error",
+					Error: &protocol.Error{Code: "BACKGROUND_ERROR", Message: "start failed after ready"},
+				}},
+			}); err != nil {
+				return
+			}
+		}
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "protocol-background",
+		UnitName:   "bg",
+		Kind:       "test.protocol_background/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "start failed after ready") {
+			t.Fatalf("done error = %v, want start failed after ready", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background event was swallowed by start waiter")
+	}
+}
+
+func TestStdioClientIgnoresLateBackgroundEventAfterStop(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"os"
+	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
+)
+
+func main() {
+	reader := protocol.NewFrameReader(os.Stdin, 16<<20)
+	writer := protocol.NewFrameWriter(os.Stdout)
+	for {
+		frame, err := reader.ReadFrame()
+		if err != nil {
+			return
+		}
+		switch frame.Body.(type) {
+		case *protocol.Frame_StartRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_StartResponse{StartResponse: &protocol.StartResponse{TaskId: "bg-1"}},
+			}); err != nil {
+				return
+			}
+		case *protocol.Frame_StopRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_StopResponse{StopResponse: &protocol.StopResponse{}},
+			}); err != nil {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: "start-1",
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_BackgroundEvent{BackgroundEvent: &protocol.BackgroundEvent{
+					TaskId: "bg-1",
+					Event: "fatal_error",
+					Error: &protocol.Error{Code: "BACKGROUND_ERROR", Message: "late stop failure"},
+				}},
+			}); err != nil {
+				return
+			}
+		case *protocol.Frame_HandshakeRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				Body: &protocol.Frame_HandshakeResponse{HandshakeResponse: &protocol.HandshakeResponse{
+					SelectedProtocol: "wkbench.plugin/v1",
+					Manifest: &protocol.PluginManifest{
+						Name: "late-event-plugin",
+						Version: "dev",
+						Protocol: "wkbench.plugin/v1",
+					},
+				}},
+			}); err != nil {
+				return
+			}
+		case *protocol.Frame_ValidateRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				Body: &protocol.Frame_ValidateResponse{ValidateResponse: &protocol.ValidateResponse{}},
+			}); err != nil {
+				return
+			}
+		}
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "protocol-background",
+		UnitName:   "bg",
+		Kind:       "test.protocol_background/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("stop background: %v", err)
+	}
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "late stop failure") {
+			t.Fatalf("done error = %v, want late stop failure", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background task did not complete after stop")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := client.Handshake(context.Background()); err != nil {
+		t.Fatalf("handshake after late background event: %v", err)
+	}
+	if err := client.Validate(context.Background(), UnitRequest{
+		UnitName: "bg",
+		Kind:     "test.protocol_background/v1",
+		SpecJSON: []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("validate after late background event: %v", err)
 	}
 }
 
