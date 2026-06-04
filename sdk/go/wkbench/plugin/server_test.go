@@ -569,6 +569,63 @@ func TestServerStopFlushesBackgroundOutputsAndMetrics(t *testing.T) {
 	}
 }
 
+func TestServerStopFailureLeavesTaskRetryable(t *testing.T) {
+	unit := &serverBackgroundUnit{
+		writeFinalState:     true,
+		stopErrorsRemaining: 1,
+	}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	writer := protocol.NewFrameWriter(&out)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	if err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, writer); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	taskID := readServerTestFrame(t, &out).GetStartResponse().GetTaskId()
+
+	out.Reset()
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("first handle stop: %v", err)
+	}
+	firstStop := readServerTestFrame(t, &out)
+	if rpcErr := firstStop.GetError(); rpcErr == nil || rpcErr.GetCode() != "RUN_ERROR" {
+		t.Fatalf("first stop frame = %#v, want RUN_ERROR", firstStop)
+	}
+
+	out.Reset()
+	stopFrame.RequestId = "stop-2"
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("second handle stop: %v", err)
+	}
+	outputFrame := readServerTestFrame(t, &out)
+	if outputFrame.GetRequestId() != "start-1" || outputFrame.GetSetOutput() == nil {
+		t.Fatalf("retry output frame = %#v", outputFrame)
+	}
+	metricFrame := readServerTestFrame(t, &out)
+	if metricFrame.GetRequestId() != "start-1" || metricFrame.GetMetricFlush() == nil {
+		t.Fatalf("retry metric frame = %#v", metricFrame)
+	}
+	stopResponse := readServerTestFrame(t, &out)
+	if stopResponse.GetRequestId() != "stop-2" || stopResponse.GetStopResponse() == nil {
+		t.Fatalf("retry stop response = %#v", stopResponse)
+	}
+	if unit.stopCalls != 2 {
+		t.Fatalf("stop calls = %d, want 2", unit.stopCalls)
+	}
+}
+
 func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	unit := &serverBackgroundUnit{writeArtifacts: true}
 	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
@@ -767,6 +824,95 @@ func TestServerBackgroundTaskDoneNilEmitsCompletedEvent(t *testing.T) {
 		t.Fatalf("event error = %#v, want nil", event.GetError())
 	}
 	_ = toHostWriter.Close()
+}
+
+func TestServerStopAfterBackgroundFatalEventFlushesFinalState(t *testing.T) {
+	testServerStopAfterBackgroundEventFlushesFinalState(t, fmt.Errorf("collector failed"), "fatal_error")
+}
+
+func TestServerStopAfterBackgroundCompletedEventFlushesFinalState(t *testing.T) {
+	testServerStopAfterBackgroundEventFlushesFinalState(t, nil, "completed")
+}
+
+func testServerStopAfterBackgroundEventFlushesFinalState(t *testing.T, doneErr error, wantEvent string) {
+	t.Helper()
+	unit := &serverBackgroundUnit{
+		done:            make(chan error, 1),
+		writeFinalState: true,
+	}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	toHostReader, toHostWriter := io.Pipe()
+	serverErr := make(chan error, 1)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	go func() {
+		err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, protocol.NewFrameWriter(toHostWriter))
+		serverErr <- err
+	}()
+
+	hostReader := protocol.NewFrameReader(toHostReader, 16<<20)
+	taskID := readServerPipeFrame(t, hostReader).GetStartResponse().GetTaskId()
+	if taskID == "" {
+		t.Fatalf("empty task id")
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	unit.done <- doneErr
+	eventFrame := readServerPipeFrame(t, hostReader)
+	event := eventFrame.GetBackgroundEvent()
+	if event == nil {
+		t.Fatalf("event frame = %#v", eventFrame)
+	}
+	if event.GetTaskId() != taskID || event.GetEvent() != wantEvent {
+		t.Fatalf("event = %#v, want task %q event %q", event, taskID, wantEvent)
+	}
+
+	serverErr = make(chan error, 1)
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	go func() {
+		err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), protocol.NewFrameWriter(toHostWriter))
+		_ = toHostWriter.Close()
+		serverErr <- err
+	}()
+
+	outputFrame := readServerPipeFrame(t, hostReader)
+	if outputFrame.GetRequestId() != "start-1" {
+		t.Fatalf("output request id = %q, want start-1", outputFrame.GetRequestId())
+	}
+	output := outputFrame.GetSetOutput()
+	if output == nil || output.GetName() != "summary" {
+		t.Fatalf("output frame = %#v", outputFrame)
+	}
+	metricFrame := readServerPipeFrame(t, hostReader)
+	if metricFrame.GetRequestId() != "start-1" {
+		t.Fatalf("metric request id = %q, want start-1", metricFrame.GetRequestId())
+	}
+	flush := metricFrame.GetMetricFlush()
+	if flush == nil || len(flush.GetMetrics()) != 1 || flush.GetMetrics()[0].GetName() != "background_ticks" || flush.GetMetrics()[0].GetSum() != 3 {
+		t.Fatalf("metric flush = %#v", flush)
+	}
+	stopResponse := readServerPipeFrame(t, hostReader)
+	if stopResponse.GetRequestId() != "stop-1" || stopResponse.GetStopResponse() == nil {
+		t.Fatalf("stop response = %#v", stopResponse)
+	}
+	if !unit.stopCalled {
+		t.Fatalf("Stop was not called")
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
 }
 
 func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
@@ -1028,13 +1174,15 @@ func (noopBackgroundTask) Done() <-chan error {
 }
 
 type serverBackgroundUnit struct {
-	startCalled     bool
-	runCalled       bool
-	stopCalled      bool
-	writeFinalState bool
-	writeArtifacts  bool
-	done            chan error
-	env             contract.RunEnv
+	startCalled         bool
+	runCalled           bool
+	stopCalled          bool
+	writeFinalState     bool
+	writeArtifacts      bool
+	stopCalls           int
+	stopErrorsRemaining int
+	done                chan error
+	env                 contract.RunEnv
 }
 
 func (u *serverBackgroundUnit) Definition() contract.Definition {
@@ -1084,6 +1232,11 @@ type serverBackgroundTask struct {
 
 func (t serverBackgroundTask) Stop(context.Context) error {
 	t.unit.stopCalled = true
+	t.unit.stopCalls++
+	if t.unit.stopErrorsRemaining > 0 {
+		t.unit.stopErrorsRemaining--
+		return fmt.Errorf("stop failed")
+	}
 	defer close(t.unit.done)
 	if t.unit.writeFinalState {
 		if err := t.unit.env.SetOutput("summary", map[string]any{"stopped": true}); err != nil {

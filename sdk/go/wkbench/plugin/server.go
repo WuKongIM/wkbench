@@ -258,25 +258,33 @@ func (s *server) handleStart(ctx context.Context, frame *protocol.Frame, req *pr
 }
 
 func (s *server) handleStop(ctx context.Context, frame *protocol.Frame, req *protocol.StopRequest, writer *protocol.FrameWriter) error {
-	record, ok := s.takeBackgroundTask(req.GetTaskId())
+	record, ok := s.beginBackgroundTaskStop(req.GetTaskId())
 	if !ok {
 		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", fmt.Sprintf("background task %q is not active", req.GetTaskId()))
 	}
 	if err := record.task.Stop(ctx); err != nil {
+		s.abortBackgroundTaskStop(record.id, record)
 		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	if err := s.writeOutputs(record.requestID, record.env, record.unit, writer); err != nil {
+		s.abortBackgroundTaskStop(record.id, record)
 		return err
 	}
 	if err := s.writeMetricFlush(record.requestID, record.env, writer); err != nil {
+		s.abortBackgroundTaskStop(record.id, record)
 		return err
 	}
-	return s.writeFrame(writer, &protocol.Frame{
+	if err := s.writeFrame(writer, &protocol.Frame{
 		RequestId:      frame.GetRequestId(),
 		RunId:          record.runID,
 		UnitInstanceId: record.unitName,
 		Body:           &protocol.Frame_StopResponse{StopResponse: &protocol.StopResponse{}},
-	})
+	}); err != nil {
+		s.abortBackgroundTaskStop(record.id, record)
+		return err
+	}
+	s.completeBackgroundTaskStop(record.id, record)
+	return nil
 }
 
 func (s *server) storeBackgroundTask(requestID, runID, unitName string, unit contract.Unit, env *remoteRunEnv, task contract.BackgroundTask) *backgroundTaskRecord {
@@ -297,7 +305,7 @@ func (s *server) storeBackgroundTask(requestID, runID, unitName string, unit con
 	return record
 }
 
-func (s *server) takeBackgroundTask(taskID string) (*backgroundTaskRecord, bool) {
+func (s *server) beginBackgroundTaskStop(taskID string) (*backgroundTaskRecord, bool) {
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	record, ok := s.tasks[taskID]
@@ -305,8 +313,23 @@ func (s *server) takeBackgroundTask(taskID string) (*backgroundTaskRecord, bool)
 		return nil, false
 	}
 	record.stopping = true
-	delete(s.tasks, taskID)
 	return record, true
+}
+
+func (s *server) abortBackgroundTaskStop(taskID string, record *backgroundTaskRecord) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	if s.tasks[taskID] == record {
+		record.stopping = false
+	}
+}
+
+func (s *server) completeBackgroundTaskStop(taskID string, record *backgroundTaskRecord) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	if s.tasks[taskID] == record {
+		delete(s.tasks, taskID)
+	}
 }
 
 func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTask, writer *protocol.FrameWriter) {
@@ -316,9 +339,6 @@ func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTa
 	}
 	s.taskMu.Lock()
 	record, active := s.tasks[taskID]
-	if active {
-		delete(s.tasks, taskID)
-	}
 	s.taskMu.Unlock()
 	if !active || record.stopping {
 		return
