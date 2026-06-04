@@ -396,7 +396,10 @@ func (s *server) writeOutputs(requestID string, env *remoteRunEnv, unit contract
 		}
 		payload, err := encodeJSONPayload(value)
 		if err != nil {
-			return s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error())
+			if writeErr := s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error()); writeErr != nil {
+				return fmt.Errorf("%w; write protocol error: %v", err, writeErr)
+			}
+			return err
 		}
 		var reportPayload []byte
 		if output.Meta.Reportable && !output.Meta.Sensitive {
@@ -406,7 +409,10 @@ func (s *server) writeOutputs(requestID string, env *remoteRunEnv, unit contract
 			}
 			reportPayload, err = encodeJSONPayload(reportValue)
 			if err != nil {
-				return s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error())
+				if writeErr := s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error()); writeErr != nil {
+					return fmt.Errorf("%w; write protocol error: %v", err, writeErr)
+				}
+				return err
 			}
 		}
 		if err := s.writeFrame(writer, &protocol.Frame{

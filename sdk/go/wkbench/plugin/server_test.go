@@ -626,6 +626,80 @@ func TestServerStopFailureLeavesTaskRetryable(t *testing.T) {
 	}
 }
 
+func TestServerStopRawOutputFlushFailureLeavesTaskRetryable(t *testing.T) {
+	testServerStopOutputFlushFailureLeavesTaskRetryable(t, func(unit *serverBackgroundUnit) {
+		unit.badOutputStopsRemaining = 1
+	})
+}
+
+func TestServerStopReportOutputFlushFailureLeavesTaskRetryable(t *testing.T) {
+	testServerStopOutputFlushFailureLeavesTaskRetryable(t, func(unit *serverBackgroundUnit) {
+		unit.badReportStopsRemaining = 1
+	})
+}
+
+func testServerStopOutputFlushFailureLeavesTaskRetryable(t *testing.T, configure func(*serverBackgroundUnit)) {
+	t.Helper()
+	unit := &serverBackgroundUnit{writeFinalState: true}
+	configure(unit)
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	writer := protocol.NewFrameWriter(&out)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	if err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, writer); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	taskID := readServerTestFrame(t, &out).GetStartResponse().GetTaskId()
+
+	out.Reset()
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err == nil {
+		t.Fatalf("first handle stop error = nil, want encoding failure")
+	}
+	firstStop := readServerTestFrame(t, &out)
+	if firstStop.GetStopResponse() != nil {
+		t.Fatalf("first stop frame = %#v, want error frame", firstStop)
+	}
+	if firstStop.GetRequestId() != "start-1" {
+		t.Fatalf("first stop error request id = %q, want start-1", firstStop.GetRequestId())
+	}
+	if rpcErr := firstStop.GetError(); rpcErr == nil || rpcErr.GetCode() != "RUN_ERROR" {
+		t.Fatalf("first stop frame = %#v, want RUN_ERROR", firstStop)
+	}
+
+	out.Reset()
+	stopFrame.RequestId = "stop-2"
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("second handle stop: %v", err)
+	}
+	outputFrame := readServerTestFrame(t, &out)
+	if outputFrame.GetRequestId() != "start-1" || outputFrame.GetSetOutput() == nil {
+		t.Fatalf("retry output frame = %#v", outputFrame)
+	}
+	metricFrame := readServerTestFrame(t, &out)
+	if metricFrame.GetRequestId() != "start-1" || metricFrame.GetMetricFlush() == nil {
+		t.Fatalf("retry metric frame = %#v", metricFrame)
+	}
+	stopResponse := readServerTestFrame(t, &out)
+	if stopResponse.GetRequestId() != "stop-2" || stopResponse.GetStopResponse() == nil {
+		t.Fatalf("retry stop response = %#v", stopResponse)
+	}
+	if unit.stopCalls != 2 {
+		t.Fatalf("stop calls = %d, want 2", unit.stopCalls)
+	}
+}
+
 func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	unit := &serverBackgroundUnit{writeArtifacts: true}
 	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
@@ -1174,15 +1248,18 @@ func (noopBackgroundTask) Done() <-chan error {
 }
 
 type serverBackgroundUnit struct {
-	startCalled         bool
-	runCalled           bool
-	stopCalled          bool
-	writeFinalState     bool
-	writeArtifacts      bool
-	stopCalls           int
-	stopErrorsRemaining int
-	done                chan error
-	env                 contract.RunEnv
+	startCalled             bool
+	runCalled               bool
+	stopCalled              bool
+	writeFinalState         bool
+	writeArtifacts          bool
+	stopCalls               int
+	stopErrorsRemaining     int
+	badOutputStopsRemaining int
+	badReportStopsRemaining int
+	done                    chan error
+	doneClosed              bool
+	env                     contract.RunEnv
 }
 
 func (u *serverBackgroundUnit) Definition() contract.Definition {
@@ -1237,8 +1314,16 @@ func (t serverBackgroundTask) Stop(context.Context) error {
 		t.unit.stopErrorsRemaining--
 		return fmt.Errorf("stop failed")
 	}
-	defer close(t.unit.done)
+	defer t.unit.closeDone()
 	if t.unit.writeFinalState {
+		if t.unit.badOutputStopsRemaining > 0 {
+			t.unit.badOutputStopsRemaining--
+			return t.unit.env.SetOutput("summary", make(chan int))
+		}
+		if t.unit.badReportStopsRemaining > 0 {
+			t.unit.badReportStopsRemaining--
+			return t.unit.env.SetOutput("summary", badServerReportValue{Visible: "visible"})
+		}
 		if err := t.unit.env.SetOutput("summary", map[string]any{"stopped": true}); err != nil {
 			return err
 		}
@@ -1252,6 +1337,22 @@ func (t serverBackgroundTask) Stop(context.Context) error {
 
 func (t serverBackgroundTask) Done() <-chan error {
 	return t.unit.done
+}
+
+func (u *serverBackgroundUnit) closeDone() {
+	if u.doneClosed {
+		return
+	}
+	u.doneClosed = true
+	close(u.done)
+}
+
+type badServerReportValue struct {
+	Visible string `json:"visible"`
+}
+
+func (v badServerReportValue) ReportOutput() any {
+	return make(chan int)
 }
 
 func writeServerBackgroundArtifact(env contract.RunEnv, value string) error {
