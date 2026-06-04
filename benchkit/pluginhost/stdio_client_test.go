@@ -735,6 +735,79 @@ func main() {
 	}
 }
 
+func TestStdioClientRemoteBackgroundStopConfigErrorCompletesDone(t *testing.T) {
+	pluginPath := buildProtocolStopErrorPlugin(t, &protocol.Frame_Error{Error: &protocol.Error{
+		Code:    "CONFIG_ERROR",
+		Message: "unknown task",
+	}})
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "protocol-background-stop-error",
+		UnitName:   "bg",
+		Kind:       "test.protocol_background_stop_error/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	stopErr := task.Stop(context.Background())
+	if stopErr == nil || !strings.Contains(stopErr.Error(), "CONFIG_ERROR") {
+		t.Fatalf("stop error = %v, want CONFIG_ERROR", stopErr)
+	}
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "CONFIG_ERROR") {
+			t.Fatalf("done error = %v, want CONFIG_ERROR", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background Done did not complete after non-retryable stop error")
+	}
+}
+
+func TestStdioClientRemoteBackgroundMalformedStopCompletesDone(t *testing.T) {
+	pluginPath := buildProtocolStopErrorPlugin(t, &protocol.Frame_ValidateResponse{ValidateResponse: &protocol.ValidateResponse{}})
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "protocol-background-stop-error",
+		UnitName:   "bg",
+		Kind:       "test.protocol_background_stop_error/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	stopErr := task.Stop(context.Background())
+	if stopErr == nil || !strings.Contains(stopErr.Error(), "expected stop response frame") {
+		t.Fatalf("stop error = %v, want malformed stop response", stopErr)
+	}
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "expected stop response frame") {
+			t.Fatalf("done error = %v, want malformed stop response", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background Done did not complete after malformed stop response")
+	}
+}
+
 func TestStdioClientBackgroundEventBypassesStartWaiter(t *testing.T) {
 	oldProcs := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
@@ -1576,6 +1649,60 @@ func buildSourcePlugin(t *testing.T, source string) string {
 		t.Fatalf("build source plugin: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func buildProtocolStopErrorPlugin(t *testing.T, stopBody any) string {
+	t.Helper()
+	var stopBodySource string
+	switch body := stopBody.(type) {
+	case *protocol.Frame_Error:
+		stopBodySource = fmt.Sprintf(`&protocol.Frame_Error{Error: &protocol.Error{Code: %s, Message: %s}}`,
+			strconv.Quote(body.Error.GetCode()), strconv.Quote(body.Error.GetMessage()))
+	case *protocol.Frame_ValidateResponse:
+		stopBodySource = `&protocol.Frame_ValidateResponse{ValidateResponse: &protocol.ValidateResponse{}}`
+	default:
+		t.Fatalf("unsupported stop body %T", stopBody)
+	}
+	return buildSourcePlugin(t, fmt.Sprintf(`
+package main
+
+import (
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
+)
+
+func main() {
+	reader := protocol.NewFrameReader(os.Stdin, 16<<20)
+	writer := protocol.NewFrameWriter(os.Stdout)
+	for {
+		frame, err := reader.ReadFrame()
+		if err != nil {
+			return
+		}
+		switch frame.Body.(type) {
+		case *protocol.Frame_StartRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: &protocol.Frame_StartResponse{StartResponse: &protocol.StartResponse{TaskId: "bg-1"}},
+			}); err != nil {
+				return
+			}
+		case *protocol.Frame_StopRequest:
+			if err := writer.WriteFrame(&protocol.Frame{
+				RequestId: frame.GetRequestId(),
+				RunId: frame.GetRunId(),
+				UnitInstanceId: frame.GetUnitInstanceId(),
+				Body: %s,
+			}); err != nil {
+				return
+			}
+		}
+	}
+}
+`, stopBodySource))
 }
 
 func buildMetricPlugin(t *testing.T) string {

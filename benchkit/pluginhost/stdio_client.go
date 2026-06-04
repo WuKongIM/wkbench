@@ -466,17 +466,21 @@ func (t *remoteBackgroundTask) Stop(ctx context.Context) (err error) {
 	}
 	if response.GetRequestId() != requestID {
 		err := fmt.Errorf("stop response request id = %q, want %q", response.GetRequestId(), requestID)
-		t.markNotStopping()
+		t.finish(err)
 		return err
 	}
 	if rpcErr := response.GetError(); rpcErr != nil {
 		err := pluginRPCError(rpcErr)
-		t.markNotStopping()
+		if rpcErr.GetCode() == "RUN_ERROR" {
+			t.markNotStopping()
+		} else {
+			t.finish(err)
+		}
 		return err
 	}
 	if response.GetStopResponse() == nil {
 		err := fmt.Errorf("expected stop response frame")
-		t.markNotStopping()
+		t.finish(err)
 		return err
 	}
 	t.waitForStopTerminalEvent()
@@ -837,6 +841,7 @@ func (c *StdioClient) failAllBackgroundTasks(err error) {
 
 type runArtifactState struct {
 	env     contract.RunEnv
+	mu      sync.Mutex
 	next    int64
 	writers map[string]*hostArtifactWriter
 }
@@ -855,6 +860,9 @@ func newRunArtifactState(env contract.RunEnv) *runArtifactState {
 }
 
 func (s *runArtifactState) open(open *protocol.ArtifactOpen) (*protocol.ArtifactOpened, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if open == nil {
 		return nil, fmt.Errorf("artifact open frame missing body")
 	}
@@ -869,6 +877,9 @@ func (s *runArtifactState) open(open *protocol.ArtifactOpen) (*protocol.Artifact
 }
 
 func (s *runArtifactState) write(chunk *protocol.ArtifactChunk) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if chunk == nil {
 		return fmt.Errorf("artifact chunk frame missing body")
 	}
@@ -888,6 +899,9 @@ func (s *runArtifactState) write(chunk *protocol.ArtifactChunk) error {
 }
 
 func (s *runArtifactState) close(closeFrame *protocol.ArtifactClose) (*protocol.ArtifactClosed, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if closeFrame == nil {
 		return nil, fmt.Errorf("artifact close frame missing body")
 	}
@@ -904,6 +918,9 @@ func (s *runArtifactState) close(closeFrame *protocol.ArtifactClose) (*protocol.
 }
 
 func (s *runArtifactState) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for handle, writer := range s.writers {
 		_ = writer.writer.Close()
 		delete(s.writers, handle)
