@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -215,6 +216,93 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	}
 	if result["message"] != "hello from stdio" {
 		t.Fatalf("result message = %#v", result["message"])
+	}
+}
+
+func TestStdioClientRunHandlesBurstOfResponseFrames(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type burstUnit struct{}
+
+func (burstUnit) Definition() contract.Definition {
+	outputs := make([]contract.PortDef, 25)
+	for i := range outputs {
+		outputs[i] = contract.PortDef{
+			Name: fmt.Sprintf("out_%02d", i),
+			Type: "port.test.burst/v1",
+		}
+	}
+	return contract.Definition{
+		Kind:    "test.burst/v1",
+		Outputs: outputs,
+	}
+}
+func (burstUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (burstUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (burstUnit) Run(ctx context.Context, env contract.RunEnv) error {
+	for i := 0; i < 25; i++ {
+		if err := env.SetOutput(fmt.Sprintf("out_%02d", i), map[string]any{"index": i}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "burst", Version: "dev", Units: []contract.Unit{burstUnit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Fatalf("close client: %v", err)
+		}
+	}()
+
+	if _, err := client.Handshake(context.Background()); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	req := UnitRequest{
+		UnitName: "burst",
+		Kind:     "test.burst/v1",
+		RunID:    "run-burst",
+		SpecJSON: []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	if err := client.Run(context.Background(), RunRequest{UnitRequest: req}, env); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for i := 0; i < 25; i++ {
+		name := fmt.Sprintf("out_%02d", i)
+		output, ok := env.Output(name)
+		if !ok {
+			t.Fatalf("missing output %q", name)
+		}
+		value, ok := output.(map[string]any)
+		if !ok {
+			t.Fatalf("output %q type = %T, want map[string]any", name, output)
+		}
+		if value["index"] != float64(i) {
+			t.Fatalf("output %q index = %#v, want %d", name, value["index"], i)
+		}
 	}
 }
 

@@ -33,7 +33,7 @@ type StdioClient struct {
 
 	pumpDone chan error
 	reqMu    sync.Mutex
-	waiters  map[string]chan readResult
+	waiters  map[string]*requestWaiter
 	bgTasks  map[string]*remoteBackgroundTask
 }
 
@@ -42,6 +42,18 @@ var errStdioClientClosed = errors.New("stdio plugin client closed")
 type readResult struct {
 	frame *protocol.Frame
 	err   error
+}
+
+type requestWaiter struct {
+	results chan readResult
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (w *requestWaiter) close() {
+	w.once.Do(func() {
+		close(w.done)
+	})
 }
 
 type remoteBackgroundTask struct{}
@@ -77,7 +89,7 @@ func StartStdioCommand(ctx context.Context, command StdioCommand) (*StdioClient,
 		writer:   protocol.NewFrameWriter(stdin),
 		waitCh:   make(chan error, 1),
 		pumpDone: make(chan error, 1),
-		waiters:  make(map[string]chan readResult),
+		waiters:  make(map[string]*requestWaiter),
 		bgTasks:  make(map[string]*remoteBackgroundTask),
 	}
 	go client.readLoop(reader)
@@ -104,18 +116,21 @@ func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
 			c.failAllBackgroundTasks(fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId()))
 			continue
 		}
-		waiter <- readResult{frame: frame}
+		select {
+		case waiter.results <- readResult{frame: frame}:
+		case <-waiter.done:
+		}
 	}
 }
 
 func (c *StdioClient) Handshake(ctx context.Context) (Plugin, error) {
-	const requestID = "handshake"
 	if err := ctx.Err(); err != nil {
 		c.shutdown(true)
 		c.startWait()
 		return Plugin{}, err
 	}
 
+	requestID := c.nextRequestID("handshake")
 	waiter := c.registerWaiter(requestID)
 	defer c.unregisterWaiter(requestID)
 	if err := c.writeFrame(&protocol.Frame{
@@ -350,27 +365,45 @@ func writeRunArtifactError(write func(*protocol.Frame) error, requestID, runID, 
 	return err
 }
 
-func (c *StdioClient) registerWaiter(requestID string) chan readResult {
-	ch := make(chan readResult, 16)
+func (c *StdioClient) registerWaiter(requestID string) *requestWaiter {
+	waiter := &requestWaiter{
+		results: make(chan readResult, 16),
+		done:    make(chan struct{}),
+	}
 	c.reqMu.Lock()
-	c.waiters[requestID] = ch
+	c.waiters[requestID] = waiter
 	c.reqMu.Unlock()
-	return ch
+	return waiter
 }
 
 func (c *StdioClient) unregisterWaiter(requestID string) {
 	c.reqMu.Lock()
-	delete(c.waiters, requestID)
+	waiter := c.waiters[requestID]
+	if waiter != nil {
+		delete(c.waiters, requestID)
+	}
 	c.reqMu.Unlock()
+	if waiter != nil {
+		waiter.close()
+	}
 }
 
 func (c *StdioClient) failAllWaiters(err error) {
 	c.reqMu.Lock()
-	defer c.reqMu.Unlock()
+	waiters := make([]*requestWaiter, 0, len(c.waiters))
 	for requestID, waiter := range c.waiters {
 		delete(c.waiters, requestID)
-		waiter <- readResult{err: err}
-		close(waiter)
+		waiters = append(waiters, waiter)
+	}
+	c.reqMu.Unlock()
+
+	for _, waiter := range waiters {
+		select {
+		case waiter.results <- readResult{err: err}:
+		case <-waiter.done:
+		default:
+		}
+		waiter.close()
 	}
 }
 
@@ -390,22 +423,42 @@ func (c *StdioClient) writeFrame(frame *protocol.Frame) error {
 	return c.writer.WriteFrame(frame)
 }
 
-func (c *StdioClient) waitForRequestFrame(ctx context.Context, waiter <-chan readResult, op string) (*protocol.Frame, error) {
+func (c *StdioClient) waitForRequestFrame(ctx context.Context, waiter *requestWaiter, op string) (*protocol.Frame, error) {
 	select {
-	case result := <-waiter:
+	case result := <-waiter.results:
 		if result.err != nil {
 			return nil, fmt.Errorf("read %s response: %w", op, result.err)
 		}
 		return result.frame, nil
+	case <-waiter.done:
+		select {
+		case result := <-waiter.results:
+			if result.err != nil {
+				return nil, fmt.Errorf("read %s response: %w", op, result.err)
+			}
+			return result.frame, nil
+		default:
+			return nil, fmt.Errorf("%s request closed: %w", op, errStdioClientClosed)
+		}
 	default:
 	}
 
 	select {
-	case result := <-waiter:
+	case result := <-waiter.results:
 		if result.err != nil {
 			return nil, fmt.Errorf("read %s response: %w", op, result.err)
 		}
 		return result.frame, nil
+	case <-waiter.done:
+		select {
+		case result := <-waiter.results:
+			if result.err != nil {
+				return nil, fmt.Errorf("read %s response: %w", op, result.err)
+			}
+			return result.frame, nil
+		default:
+			return nil, fmt.Errorf("%s request closed: %w", op, errStdioClientClosed)
+		}
 	case <-ctx.Done():
 		c.shutdown(true)
 		c.startWait()
@@ -668,7 +721,10 @@ func (c *StdioClient) close() error {
 
 	select {
 	case <-c.pumpDone:
-	default:
+	case <-time.After(500 * time.Millisecond):
+		if !c.wasKilled() {
+			return fmt.Errorf("read pump did not exit after plugin process exit")
+		}
 	}
 	return nil
 }
