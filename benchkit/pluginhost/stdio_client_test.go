@@ -160,6 +160,57 @@ func main() {
 	}
 }
 
+func TestStdioClientHandshakeFailsPromptlyOnUnknownResponseRequestID(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"os"
+	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/protocol"
+)
+
+func main() {
+	reader := protocol.NewFrameReader(os.Stdin, 16<<20)
+	writer := protocol.NewFrameWriter(os.Stdout)
+
+	frame, err := reader.ReadFrame()
+	if err != nil {
+		os.Exit(1)
+	}
+	if err := writer.WriteFrame(&protocol.Frame{
+		RequestId: "wrong-" + frame.GetRequestId(),
+		Body: &protocol.Frame_HandshakeResponse{HandshakeResponse: &protocol.HandshakeResponse{
+			SelectedProtocol: "wkbench.plugin/v1",
+		}},
+	}); err != nil {
+		os.Exit(1)
+	}
+	time.Sleep(2 * time.Second)
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	start := time.Now()
+	_, err = client.Handshake(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected handshake error")
+	}
+	if !strings.Contains(err.Error(), "unexpected plugin frame") && !strings.Contains(err.Error(), "request id") {
+		t.Fatalf("handshake error = %v, want unexpected frame or request id error", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("handshake returned after %s, want prompt protocol error", elapsed)
+	}
+}
+
 func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	bin := buildDemoPlugin(t)
 
@@ -498,6 +549,42 @@ func TestWriteRunArtifactErrorSendsProtocolErrorFrame(t *testing.T) {
 	rpcErr := frame.GetError()
 	if rpcErr == nil || rpcErr.GetCode() != "ARTIFACT_ERROR" || !strings.Contains(rpcErr.GetMessage(), sourceErr.Error()) {
 		t.Fatalf("rpc error = %#v", rpcErr)
+	}
+}
+
+func TestStdioClientDeliverWaiterResultFailsWaitersOnFullQueue(t *testing.T) {
+	client := &StdioClient{
+		waiters: make(map[string]*requestWaiter),
+	}
+	full := client.registerWaiter("full")
+	peer := client.registerWaiter("peer")
+	for i := 0; i < cap(full.results); i++ {
+		full.results <- readResult{frame: &protocol.Frame{RequestId: "full"}}
+	}
+
+	if ok := client.deliverWaiterResult("full", full, readResult{frame: &protocol.Frame{RequestId: "full"}}); ok {
+		t.Fatal("deliverWaiterResult succeeded with full queue")
+	}
+	if got := len(client.waiters); got != 0 {
+		t.Fatalf("waiters count = %d, want 0", got)
+	}
+	select {
+	case <-full.done:
+	default:
+		t.Fatal("full waiter was not closed")
+	}
+	select {
+	case result := <-peer.results:
+		if result.err == nil || !strings.Contains(result.err.Error(), "plugin response queue full") {
+			t.Fatalf("peer result error = %v, want queue full", result.err)
+		}
+	default:
+		t.Fatal("peer waiter did not receive overflow error")
+	}
+	select {
+	case <-peer.done:
+	default:
+		t.Fatal("peer waiter was not closed")
 	}
 }
 

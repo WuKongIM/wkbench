@@ -113,12 +113,14 @@ func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
 		waiter := c.waiters[frame.GetRequestId()]
 		c.reqMu.Unlock()
 		if waiter == nil {
-			c.failAllBackgroundTasks(fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId()))
+			err := fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId())
+			c.failAllWaiters(err)
+			c.failAllBackgroundTasks(err)
+			c.shutdown(true)
 			continue
 		}
-		select {
-		case waiter.results <- readResult{frame: frame}:
-		case <-waiter.done:
+		if ok := c.deliverWaiterResult(frame.GetRequestId(), waiter, readResult{frame: frame}); !ok {
+			continue
 		}
 	}
 }
@@ -367,7 +369,7 @@ func writeRunArtifactError(write func(*protocol.Frame) error, requestID, runID, 
 
 func (c *StdioClient) registerWaiter(requestID string) *requestWaiter {
 	waiter := &requestWaiter{
-		results: make(chan readResult, 16),
+		results: make(chan readResult, 64),
 		done:    make(chan struct{}),
 	}
 	c.reqMu.Lock()
@@ -404,6 +406,21 @@ func (c *StdioClient) failAllWaiters(err error) {
 		default:
 		}
 		waiter.close()
+	}
+}
+
+func (c *StdioClient) deliverWaiterResult(requestID string, waiter *requestWaiter, result readResult) bool {
+	select {
+	case waiter.results <- result:
+		return true
+	case <-waiter.done:
+		return false
+	default:
+		err := fmt.Errorf("plugin response queue full for request %q", requestID)
+		c.failAllWaiters(err)
+		c.failAllBackgroundTasks(err)
+		c.shutdown(true)
+		return false
 	}
 }
 
@@ -733,13 +750,15 @@ func (c *StdioClient) shutdown(kill bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
-	if kill && !c.killed && c.cmd.Process != nil {
+	if kill && !c.killed && c.cmd != nil && c.cmd.Process != nil {
 		if err := c.cmd.Process.Kill(); err == nil {
 			c.killed = true
 		}
 	}
 	if !c.closed {
-		_ = c.stdin.Close()
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
 		c.closed = true
 	}
 }
