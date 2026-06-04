@@ -162,6 +162,7 @@ func main() {
 }
 
 func TestStdioClientHandshakeFailsPromptlyOnUnknownResponseRequestID(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "wrong-response-about-to-send")
 	pluginPath := buildSourcePlugin(t, `
 package main
 
@@ -180,6 +181,12 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
+	if len(os.Args) < 2 {
+		os.Exit(1)
+	}
+	if err := os.WriteFile(os.Args[1], []byte("ready"), 0o644); err != nil {
+		os.Exit(1)
+	}
 	if err := writer.WriteFrame(&protocol.Frame{
 		RequestId: "wrong-" + frame.GetRequestId(),
 		Body: &protocol.Frame_HandshakeResponse{HandshakeResponse: &protocol.HandshakeResponse{
@@ -192,20 +199,36 @@ func main() {
 }
 `)
 
-	client, err := StartStdioClient(context.Background(), pluginPath)
+	client, err := StartStdioCommand(context.Background(), StdioCommand{
+		Path: pluginPath,
+		Args: []string{markerPath},
+	})
 	if err != nil {
 		t.Fatalf("start plugin: %v", err)
 	}
 	defer client.Close()
 
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.Handshake(context.Background())
+		errCh <- err
+	}()
+
+	waitForFile(t, markerPath, 5*time.Second)
+
 	start := time.Now()
-	_, err = client.Handshake(context.Background())
+	var handshakeErr error
+	select {
+	case handshakeErr = <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("handshake did not return promptly after plugin reached unknown response request id path")
+	}
 	elapsed := time.Since(start)
-	if err == nil {
+	if handshakeErr == nil {
 		t.Fatal("expected handshake error")
 	}
-	if !strings.Contains(err.Error(), "unexpected plugin frame") && !strings.Contains(err.Error(), "request id") {
-		t.Fatalf("handshake error = %v, want unexpected frame or request id error", err)
+	if !strings.Contains(handshakeErr.Error(), "unexpected plugin frame") && !strings.Contains(handshakeErr.Error(), "request id") {
+		t.Fatalf("handshake error = %v, want unexpected frame or request id error", handshakeErr)
 	}
 	if elapsed > time.Second {
 		t.Fatalf("handshake returned after %s, want prompt protocol error", elapsed)
@@ -1619,6 +1642,23 @@ func TestStdioClientSuccessfulHandshakeStopsCancelWatcher(t *testing.T) {
 		if _, err := client.Handshake(context.Background()); err != nil {
 			t.Fatalf("follow-up handshake %d: %v", i, err)
 		}
+	}
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat marker file: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for marker file %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
