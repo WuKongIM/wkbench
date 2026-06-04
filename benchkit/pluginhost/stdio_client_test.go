@@ -598,6 +598,143 @@ func main() {
 	}
 }
 
+func TestStdioClientRetriesRemoteBackgroundStopAfterRunError(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type retryStopBackgroundUnit struct{}
+
+func (retryStopBackgroundUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.remote_background_stop_retry/v1",
+		Outputs: []contract.PortDef{{Name: "summary", Type: "port.test.summary/v1"}},
+		Metrics: []contract.MetricDef{{Name: "background_ticks", Type: "counter"}},
+		Artifacts: []contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}},
+	}
+}
+func (retryStopBackgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (retryStopBackgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (retryStopBackgroundUnit) Run(context.Context, contract.RunEnv) error { return nil }
+func (retryStopBackgroundUnit) Start(_ context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	return &retryStopTask{env: env, done: make(chan error, 1)}, nil
+}
+
+type retryStopTask struct {
+	env contract.RunEnv
+	done chan error
+	stops int
+}
+
+func (t *retryStopTask) Stop(context.Context) error {
+	t.stops++
+	if t.stops == 1 {
+		return fmt.Errorf("temporary stop failure")
+	}
+	if err := t.env.SetOutput("summary", map[string]any{"stopped": true, "attempt": t.stops}); err != nil {
+		return err
+	}
+	t.env.EmitCounter("background_ticks", 7, contract.Labels{"phase": "retry"})
+	writer, err := t.env.OpenArtifact("background.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write([]byte("{\"retry\":true}\n")); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	t.done <- nil
+	close(t.done)
+	return nil
+}
+
+func (t *retryStopTask) Done() <-chan error { return t.done }
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "remote-background-stop-retry", Version: "dev", Units: []contract.Unit{retryStopBackgroundUnit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "remote-background-stop-retry",
+		UnitName:   "bg",
+		Kind:       "test.remote_background_stop_retry/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}})
+	env.SetReportDir(t.TempDir())
+
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	if err := task.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "temporary stop failure") {
+		t.Fatalf("first stop error = %v, want temporary stop failure", err)
+	}
+	select {
+	case err := <-task.Done():
+		t.Fatalf("background Done completed after retryable stop error: %v", err)
+	default:
+	}
+
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("retry stop background: %v", err)
+	}
+	select {
+	case err := <-task.Done():
+		if err != nil {
+			t.Fatalf("done error after retry = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background task did not complete after retry stop")
+	}
+	output, ok := env.Output("summary")
+	if !ok {
+		t.Fatal("missing summary output after retry stop")
+	}
+	summary, ok := output.(map[string]any)
+	if !ok || summary["stopped"] != true || summary["attempt"] != float64(2) {
+		t.Fatalf("summary output = %#v", output)
+	}
+	metrics := env.MetricSnapshots()
+	if len(metrics) != 1 || metrics[0].Name != "background_ticks" || metrics[0].Sum != 7 || metrics[0].Labels["phase"] != "retry" {
+		t.Fatalf("metrics = %#v", metrics)
+	}
+	info := env.Artifacts()["background.jsonl"]
+	if info.Path == "" {
+		t.Fatalf("artifact info = %#v", info)
+	}
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(data) != "{\"retry\":true}\n" {
+		t.Fatalf("artifact payload = %q", data)
+	}
+}
+
 func TestStdioClientBackgroundEventBypassesStartWaiter(t *testing.T) {
 	oldProcs := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })

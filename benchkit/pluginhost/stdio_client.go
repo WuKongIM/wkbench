@@ -466,17 +466,17 @@ func (t *remoteBackgroundTask) Stop(ctx context.Context) (err error) {
 	}
 	if response.GetRequestId() != requestID {
 		err := fmt.Errorf("stop response request id = %q, want %q", response.GetRequestId(), requestID)
-		t.finish(err)
+		t.markNotStopping()
 		return err
 	}
 	if rpcErr := response.GetError(); rpcErr != nil {
 		err := pluginRPCError(rpcErr)
-		t.finish(err)
+		t.markNotStopping()
 		return err
 	}
 	if response.GetStopResponse() == nil {
 		err := fmt.Errorf("expected stop response frame")
-		t.finish(err)
+		t.markNotStopping()
 		return err
 	}
 	t.waitForStopTerminalEvent()
@@ -507,8 +507,16 @@ func (t *remoteBackgroundTask) completeDone(err error) {
 }
 
 func (t *remoteBackgroundTask) markStopping() {
+	t.setStopping(true)
+}
+
+func (t *remoteBackgroundTask) markNotStopping() {
+	t.setStopping(false)
+}
+
+func (t *remoteBackgroundTask) setStopping(stopping bool) {
 	t.client.reqMu.Lock()
-	t.stopping = true
+	t.stopping = stopping
 	t.client.reqMu.Unlock()
 }
 
