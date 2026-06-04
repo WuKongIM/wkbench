@@ -130,8 +130,11 @@ Start(context.Context, StartRequest, contract.RunEnv) (RemoteBackgroundTask, err
 `StartRequest` reuses the current `RunRequest` shape. A returned
 `RemoteBackgroundTask` implements `contract.BackgroundTask`.
 
-`pluginhost.RemoteUnit` implements `contract.BackgroundUnit` when the manifest
-marks the unit as background-capable. `Start` encodes the spec, collects inputs,
+`pluginhost.NewRemoteUnit` and `NewRemoteUnitAlias` return a background wrapper
+when the manifest marks the unit as background-capable. The base
+`pluginhost.RemoteUnit` itself must not implement `contract.BackgroundUnit`,
+because Go's structural interfaces would otherwise make every remote unit look
+background-capable. The wrapper's `Start` encodes the spec, collects inputs,
 validates input source metadata, and calls the client. Normal `Run` behavior
 stays unchanged.
 
@@ -228,8 +231,8 @@ failure.
 Protocol and host tests:
 
 - manifest conversion preserves the `background` flag;
-- `RemoteUnit` implements `contract.BackgroundUnit` only for background
-  manifests;
+- `NewRemoteUnit` returns a wrapper implementing `contract.BackgroundUnit` only
+  for background manifests, while base `RemoteUnit` remains non-background;
 - `StdioClient.Start` and `Stop` can run a remote background test unit;
 - fatal background events cancel the host task `Done` channel with an error;
 - start rejects non-background units;
