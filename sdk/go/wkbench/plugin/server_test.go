@@ -1245,6 +1245,7 @@ func TestServerStopFlushesReadyDoneWhenMonitorHasNotRun(t *testing.T) {
 	unit.env = env
 	task := serverBackgroundTask{unit: unit}
 	record := srv.storeBackgroundTask("start-1", "run-1", "bg", unit, env, task)
+	go srv.monitorBackgroundTask(record, writer)
 	unit.done <- fmt.Errorf("collector failed")
 
 	stopFrame := &protocol.Frame{
@@ -1289,6 +1290,100 @@ func TestServerStopFlushesReadyDoneWhenMonitorHasNotRun(t *testing.T) {
 	}
 	if !sawEvent || !sawOutput || !sawMetric || !sawStop {
 		t.Fatalf("frames saw event=%v output=%v metric=%v stop=%v", sawEvent, sawOutput, sawMetric, sawStop)
+	}
+}
+
+func TestServerStopWaitsForMonitorConsumedDoneBeforeCleanup(t *testing.T) {
+	unit := &serverBackgroundUnit{
+		done:            make(chan error, 1),
+		writeFinalState: true,
+	}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	toHostReader, toHostWriter := io.Pipe()
+	frameCh := make(chan *protocol.Frame, 8)
+	readErr := make(chan error, 1)
+	go func() {
+		reader := protocol.NewFrameReader(toHostReader, 16<<20)
+		for {
+			frame, err := reader.ReadFrame()
+			if err != nil {
+				readErr <- err
+				return
+			}
+			frameCh <- frame
+		}
+	}()
+	writer := protocol.NewFrameWriter(toHostWriter)
+	runReq := &protocol.RunRequest{
+		UnitName: "bg",
+		Kind:     "test.server_background/v1",
+		RunId:    "run-1",
+		SpecJson: []byte(`{}`),
+	}
+	env := newRemoteRunEnv("start-1", runReq, nil, map[string]any{}, unit.Definition().Artifacts, nil, func(frame *protocol.Frame) error {
+		return srv.writeFrame(writer, frame)
+	})
+	unit.env = env
+	task := serverBackgroundTask{unit: unit}
+	record := srv.storeBackgroundTask("start-1", "run-1", "bg", unit, env, task)
+	monitorConsumedDone := make(chan struct{})
+	releaseMonitor := make(chan struct{})
+	record.beforeObserveDone = func() {
+		close(monitorConsumedDone)
+		<-releaseMonitor
+	}
+	go srv.monitorBackgroundTask(record, writer)
+
+	unit.done <- fmt.Errorf("collector failed")
+	<-monitorConsumedDone
+
+	stopErr := make(chan error, 1)
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: record.id}},
+	}
+	go func() {
+		stopErr <- srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer)
+	}()
+
+	var sawOutput, sawMetric, sawStop bool
+	for !(sawOutput && sawMetric && sawStop) {
+		frame := readServerFrameFromChannel(t, frameCh, readErr)
+		switch {
+		case frame.GetSetOutput() != nil:
+			sawOutput = true
+		case frame.GetMetricFlush() != nil:
+			sawMetric = true
+		case frame.GetStopResponse() != nil:
+			sawStop = true
+		case frame.GetBackgroundEvent() != nil:
+			t.Fatalf("background event was emitted before monitor was released")
+		default:
+			t.Fatalf("unexpected frame = %#v", frame)
+		}
+	}
+
+	close(releaseMonitor)
+	if err := <-stopErr; err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	_ = toHostWriter.Close()
+
+	frames := drainServerFrameChannel(t, frameCh, readErr)
+	var sawEvent bool
+	for _, frame := range frames {
+		if event := frame.GetBackgroundEvent(); event != nil {
+			if event.GetTaskId() != record.id || event.GetEvent() != "fatal_error" {
+				t.Fatalf("background event = %#v", event)
+			}
+			if event.GetError() == nil || event.GetError().GetMessage() != "collector failed" {
+				t.Fatalf("background event error = %#v", event.GetError())
+			}
+			sawEvent = true
+		}
+	}
+	if !sawEvent {
+		t.Fatalf("background event was not emitted after monitor consumed done before stop cleanup")
 	}
 }
 
@@ -1402,6 +1497,21 @@ func readServerFrameFromChannel(t *testing.T, frames <-chan *protocol.Frame, err
 		t.Fatalf("timed out waiting for server frame")
 	}
 	return nil
+}
+
+func drainServerFrameChannel(t *testing.T, frames <-chan *protocol.Frame, errs <-chan error) []*protocol.Frame {
+	t.Helper()
+	var out []*protocol.Frame
+	for {
+		select {
+		case frame := <-frames:
+			out = append(out, frame)
+		case <-errs:
+			return out
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out draining server frames")
+		}
+	}
 }
 
 type echoUnit struct{}

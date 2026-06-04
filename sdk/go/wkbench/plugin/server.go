@@ -41,11 +41,14 @@ type backgroundTaskRecord struct {
 	task           contract.BackgroundTask
 	done           <-chan error
 	stopMonitor    chan struct{}
+	monitorDone    chan struct{}
 	doneObserved   bool
 	doneErr        error
 	eventSent      bool
 	monitorStopped bool
 	stopping       bool
+
+	beforeObserveDone func()
 }
 
 func newServer(plugin Plugin) *server {
@@ -312,6 +315,7 @@ func (s *server) storeBackgroundTask(requestID, runID, unitName string, unit con
 		task:        task,
 		done:        task.Done(),
 		stopMonitor: make(chan struct{}),
+		monitorDone: make(chan struct{}),
 	}
 	s.tasks[id] = record
 	return record
@@ -338,21 +342,35 @@ func (s *server) abortBackgroundTaskStop(taskID string, record *backgroundTaskRe
 
 func (s *server) completeBackgroundTaskStop(taskID string, record *backgroundTaskRecord) {
 	s.taskMu.Lock()
+	if s.tasks[taskID] != record {
+		s.taskMu.Unlock()
+		return
+	}
+	if !record.monitorStopped {
+		record.monitorStopped = true
+		close(record.stopMonitor)
+	}
+	monitorDone := record.monitorDone
+	s.taskMu.Unlock()
+
+	<-monitorDone
+
+	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	if s.tasks[taskID] == record {
 		delete(s.tasks, taskID)
-		if !record.monitorStopped {
-			record.monitorStopped = true
-			close(record.stopMonitor)
-		}
 	}
 }
 
 func (s *server) monitorBackgroundTask(record *backgroundTaskRecord, writer *protocol.FrameWriter) {
+	defer close(record.monitorDone)
 	select {
 	case err, ok := <-record.done:
 		if !ok {
 			err = nil
+		}
+		if record.beforeObserveDone != nil {
+			record.beforeObserveDone()
 		}
 		s.observeBackgroundDone(record, err)
 		s.emitObservedBackgroundEvent(record, writer)
