@@ -352,12 +352,20 @@ func TestServerRunStreamsArtifacts(t *testing.T) {
 	}
 
 	var chunks bytes.Buffer
-	chunk := readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	chunkFrame := readServerPipeFrame(t, hostReader)
+	if chunkFrame.GetRequestId() != "run-1" {
+		t.Fatalf("artifact chunk request id = %q, want run-1", chunkFrame.GetRequestId())
+	}
+	chunk := chunkFrame.GetArtifactChunk()
 	if chunk == nil || chunk.GetHandle() != "artifact-1" || chunk.GetSequence() != 1 {
 		t.Fatalf("first chunk = %#v", chunk)
 	}
 	chunks.Write(chunk.GetData())
-	chunk = readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	chunkFrame = readServerPipeFrame(t, hostReader)
+	if chunkFrame.GetRequestId() != "run-1" {
+		t.Fatalf("artifact chunk request id = %q, want run-1", chunkFrame.GetRequestId())
+	}
+	chunk = chunkFrame.GetArtifactChunk()
 	if chunk == nil || chunk.GetHandle() != "artifact-1" || chunk.GetSequence() != 2 {
 		t.Fatalf("second chunk = %#v", chunk)
 	}
@@ -512,6 +520,32 @@ func TestServerStartRejectsNonBackgroundUnit(t *testing.T) {
 	}
 }
 
+func TestServerStartRejectsNilBackgroundTask(t *testing.T) {
+	unit := &serverBackgroundUnit{returnNilTask: true}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "start-nil",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleStart(context.Background(), frame, frame.GetStartRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	response := readServerTestFrame(t, &out)
+	if response.GetStartResponse() != nil {
+		t.Fatalf("response = %#v, want error", response)
+	}
+	rpcErr := response.GetError()
+	if rpcErr == nil || rpcErr.GetCode() != "RUN_ERROR" {
+		t.Fatalf("error = %#v, want RUN_ERROR", rpcErr)
+	}
+}
+
 func TestServerStopFlushesBackgroundOutputsAndMetrics(t *testing.T) {
 	unit := &serverBackgroundUnit{writeFinalState: true}
 	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
@@ -638,6 +672,18 @@ func TestServerStopReportOutputFlushFailureLeavesTaskRetryable(t *testing.T) {
 	})
 }
 
+func TestServerServeStopRawOutputFlushFailureLeavesTaskRetryable(t *testing.T) {
+	testServerServeStopOutputFlushFailureLeavesTaskRetryable(t, func(unit *serverBackgroundUnit) {
+		unit.badOutputStopsRemaining = 1
+	})
+}
+
+func TestServerServeStopReportOutputFlushFailureLeavesTaskRetryable(t *testing.T) {
+	testServerServeStopOutputFlushFailureLeavesTaskRetryable(t, func(unit *serverBackgroundUnit) {
+		unit.badReportStopsRemaining = 1
+	})
+}
+
 func testServerStopOutputFlushFailureLeavesTaskRetryable(t *testing.T, configure func(*serverBackgroundUnit)) {
 	t.Helper()
 	unit := &serverBackgroundUnit{writeFinalState: true}
@@ -664,15 +710,15 @@ func testServerStopOutputFlushFailureLeavesTaskRetryable(t *testing.T, configure
 		RequestId: "stop-1",
 		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
 	}
-	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err == nil {
-		t.Fatalf("first handle stop error = nil, want encoding failure")
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("first handle stop: %v", err)
 	}
 	firstStop := readServerTestFrame(t, &out)
 	if firstStop.GetStopResponse() != nil {
 		t.Fatalf("first stop frame = %#v, want error frame", firstStop)
 	}
-	if firstStop.GetRequestId() != "start-1" {
-		t.Fatalf("first stop error request id = %q, want start-1", firstStop.GetRequestId())
+	if firstStop.GetRequestId() != "stop-1" {
+		t.Fatalf("first stop error request id = %q, want stop-1", firstStop.GetRequestId())
 	}
 	if rpcErr := firstStop.GetError(); rpcErr == nil || rpcErr.GetCode() != "RUN_ERROR" {
 		t.Fatalf("first stop frame = %#v, want RUN_ERROR", firstStop)
@@ -697,6 +743,82 @@ func testServerStopOutputFlushFailureLeavesTaskRetryable(t *testing.T, configure
 	}
 	if unit.stopCalls != 2 {
 		t.Fatalf("stop calls = %d, want 2", unit.stopCalls)
+	}
+}
+
+func testServerServeStopOutputFlushFailureLeavesTaskRetryable(t *testing.T, configure func(*serverBackgroundUnit)) {
+	t.Helper()
+	unit := &serverBackgroundUnit{writeFinalState: true}
+	configure(unit)
+	toServerReader, toServerWriter := io.Pipe()
+	fromServerReader, fromServerWriter := io.Pipe()
+	serveErr := make(chan error, 1)
+	go func() {
+		err := Serve(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}}, toServerReader, fromServerWriter)
+		_ = fromServerWriter.Close()
+		serveErr <- err
+	}()
+
+	hostWriter := protocol.NewFrameWriter(toServerWriter)
+	hostReader := protocol.NewFrameReader(fromServerReader, 16<<20)
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}); err != nil {
+		t.Fatalf("write start: %v", err)
+	}
+	startFrame := readServerPipeFrame(t, hostReader)
+	taskID := startFrame.GetStartResponse().GetTaskId()
+	if taskID == "" {
+		t.Fatalf("start frame = %#v", startFrame)
+	}
+
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}); err != nil {
+		t.Fatalf("write first stop: %v", err)
+	}
+	firstStop := readServerPipeFrame(t, hostReader)
+	if firstStop.GetRequestId() != "stop-1" {
+		t.Fatalf("first stop request id = %q, want stop-1", firstStop.GetRequestId())
+	}
+	if rpcErr := firstStop.GetError(); rpcErr == nil || rpcErr.GetCode() != "RUN_ERROR" {
+		t.Fatalf("first stop frame = %#v, want RUN_ERROR", firstStop)
+	}
+	if firstStop.GetStopResponse() != nil {
+		t.Fatalf("first stop frame = %#v, want no stop response", firstStop)
+	}
+
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "stop-2",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}); err != nil {
+		t.Fatalf("write second stop: %v", err)
+	}
+	outputFrame := readServerPipeFrame(t, hostReader)
+	if outputFrame.GetRequestId() != "start-1" || outputFrame.GetSetOutput() == nil {
+		t.Fatalf("retry output frame = %#v", outputFrame)
+	}
+	metricFrame := readServerPipeFrame(t, hostReader)
+	if metricFrame.GetRequestId() != "start-1" || metricFrame.GetMetricFlush() == nil {
+		t.Fatalf("retry metric frame = %#v", metricFrame)
+	}
+	stopResponse := readServerPipeFrame(t, hostReader)
+	if stopResponse.GetRequestId() != "stop-2" || stopResponse.GetStopResponse() == nil {
+		t.Fatalf("retry stop response = %#v", stopResponse)
+	}
+	if unit.stopCalls != 2 {
+		t.Fatalf("stop calls = %d, want 2", unit.stopCalls)
+	}
+	_ = toServerWriter.Close()
+	if err := <-serveErr; err != nil {
+		t.Fatalf("serve: %v", err)
 	}
 }
 
@@ -731,6 +853,9 @@ func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	hostWriter := protocol.NewFrameWriter(toPluginWriter)
 	openFrame := readServerPipeFrame(t, hostReader)
 	open := openFrame.GetArtifactOpen()
+	if openFrame.GetRequestId() != "start-1" {
+		t.Fatalf("artifact open request id = %q, want start-1", openFrame.GetRequestId())
+	}
 	if open == nil || open.GetName() != "background.jsonl" {
 		t.Fatalf("open frame = %#v", openFrame)
 	}
@@ -743,11 +868,18 @@ func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write opened response: %v", err)
 	}
-	chunk := readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	chunkFrame := readServerPipeFrame(t, hostReader)
+	if chunkFrame.GetRequestId() != "start-1" {
+		t.Fatalf("artifact chunk request id = %q, want start-1", chunkFrame.GetRequestId())
+	}
+	chunk := chunkFrame.GetArtifactChunk()
 	if chunk == nil || chunk.GetHandle() != "artifact-1" || string(chunk.GetData()) != "start\n" {
 		t.Fatalf("chunk = %#v", chunk)
 	}
 	closeFrame := readServerPipeFrame(t, hostReader)
+	if closeFrame.GetRequestId() != "start-1" {
+		t.Fatalf("artifact close request id = %q, want start-1", closeFrame.GetRequestId())
+	}
 	if closeArtifact := closeFrame.GetArtifactClose(); closeArtifact == nil || closeArtifact.GetHandle() != "artifact-1" {
 		t.Fatalf("close frame = %#v", closeFrame)
 	}
@@ -781,6 +913,9 @@ func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	}()
 	openFrame = readServerPipeFrame(t, hostReader)
 	open = openFrame.GetArtifactOpen()
+	if openFrame.GetRequestId() != "start-1" {
+		t.Fatalf("stop artifact open request id = %q, want start-1", openFrame.GetRequestId())
+	}
 	if open == nil || open.GetName() != "background.jsonl" {
 		t.Fatalf("stop open frame = %#v", openFrame)
 	}
@@ -793,11 +928,18 @@ func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write stop opened response: %v", err)
 	}
-	chunk = readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	chunkFrame = readServerPipeFrame(t, hostReader)
+	if chunkFrame.GetRequestId() != "start-1" {
+		t.Fatalf("stop artifact chunk request id = %q, want start-1", chunkFrame.GetRequestId())
+	}
+	chunk = chunkFrame.GetArtifactChunk()
 	if chunk == nil || chunk.GetHandle() != "artifact-2" || string(chunk.GetData()) != "stop\n" {
 		t.Fatalf("stop chunk = %#v", chunk)
 	}
 	closeFrame = readServerPipeFrame(t, hostReader)
+	if closeFrame.GetRequestId() != "start-1" {
+		t.Fatalf("stop artifact close request id = %q, want start-1", closeFrame.GetRequestId())
+	}
 	if closeArtifact := closeFrame.GetArtifactClose(); closeArtifact == nil || closeArtifact.GetHandle() != "artifact-2" {
 		t.Fatalf("stop close frame = %#v", closeFrame)
 	}
@@ -1253,6 +1395,7 @@ type serverBackgroundUnit struct {
 	stopCalled              bool
 	writeFinalState         bool
 	writeArtifacts          bool
+	returnNilTask           bool
 	stopCalls               int
 	stopErrorsRemaining     int
 	badOutputStopsRemaining int
@@ -1300,6 +1443,9 @@ func (u *serverBackgroundUnit) Start(ctx context.Context, env contract.RunEnv) (
 			return nil, err
 		}
 	}
+	if u.returnNilTask {
+		return nil, nil
+	}
 	return serverBackgroundTask{unit: u}, nil
 }
 
@@ -1314,7 +1460,6 @@ func (t serverBackgroundTask) Stop(context.Context) error {
 		t.unit.stopErrorsRemaining--
 		return fmt.Errorf("stop failed")
 	}
-	defer t.unit.closeDone()
 	if t.unit.writeFinalState {
 		if t.unit.badOutputStopsRemaining > 0 {
 			t.unit.badOutputStopsRemaining--
@@ -1329,6 +1474,7 @@ func (t serverBackgroundTask) Stop(context.Context) error {
 		}
 		t.unit.env.EmitCounter("background_ticks", 3, nil)
 	}
+	defer t.unit.closeDone()
 	if t.unit.writeArtifacts {
 		return writeServerBackgroundArtifact(t.unit.env, "stop\n")
 	}

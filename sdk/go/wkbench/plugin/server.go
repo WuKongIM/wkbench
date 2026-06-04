@@ -199,7 +199,7 @@ func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *prot
 		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	if err := s.writeOutputs(frame.GetRequestId(), env, unit, writer); err != nil {
-		return err
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	if err := s.writeMetricFlush(frame.GetRequestId(), env, writer); err != nil {
 		return err
@@ -244,6 +244,9 @@ func (s *server) handleStart(ctx context.Context, frame *protocol.Frame, req *pr
 	if err != nil {
 		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
+	if task == nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", "background unit returned nil task")
+	}
 	record := s.storeBackgroundTask(frame.GetRequestId(), req.GetRunId(), req.GetUnitName(), unit, env, task)
 	if err := s.writeFrame(writer, &protocol.Frame{
 		RequestId:      frame.GetRequestId(),
@@ -268,11 +271,11 @@ func (s *server) handleStop(ctx context.Context, frame *protocol.Frame, req *pro
 	}
 	if err := s.writeOutputs(record.requestID, record.env, record.unit, writer); err != nil {
 		s.abortBackgroundTaskStop(record.id, record)
-		return err
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	if err := s.writeMetricFlush(record.requestID, record.env, writer); err != nil {
 		s.abortBackgroundTaskStop(record.id, record)
-		return err
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	if err := s.writeFrame(writer, &protocol.Frame{
 		RequestId:      frame.GetRequestId(),
@@ -339,8 +342,12 @@ func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTa
 	}
 	s.taskMu.Lock()
 	record, active := s.tasks[taskID]
+	stopping := false
+	if active {
+		stopping = record.stopping
+	}
 	s.taskMu.Unlock()
-	if !active || record.stopping {
+	if !active || stopping {
 		return
 	}
 	event := "completed"
@@ -396,9 +403,6 @@ func (s *server) writeOutputs(requestID string, env *remoteRunEnv, unit contract
 		}
 		payload, err := encodeJSONPayload(value)
 		if err != nil {
-			if writeErr := s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error()); writeErr != nil {
-				return fmt.Errorf("%w; write protocol error: %v", err, writeErr)
-			}
 			return err
 		}
 		var reportPayload []byte
@@ -409,9 +413,6 @@ func (s *server) writeOutputs(requestID string, env *remoteRunEnv, unit contract
 			}
 			reportPayload, err = encodeJSONPayload(reportValue)
 			if err != nil {
-				if writeErr := s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error()); writeErr != nil {
-					return fmt.Errorf("%w; write protocol error: %v", err, writeErr)
-				}
 				return err
 			}
 		}
