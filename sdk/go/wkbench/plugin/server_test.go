@@ -1506,8 +1506,21 @@ func drainServerFrameChannel(t *testing.T, frames <-chan *protocol.Frame, errs <
 		select {
 		case frame := <-frames:
 			out = append(out, frame)
+			continue
+		default:
+		}
+		select {
+		case frame := <-frames:
+			out = append(out, frame)
 		case <-errs:
-			return out
+			for {
+				select {
+				case frame := <-frames:
+					out = append(out, frame)
+				default:
+					return out
+				}
+			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out draining server frames")
 		}
