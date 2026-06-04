@@ -24,6 +24,22 @@ type Plugin struct {
 type server struct {
 	manifest    pluginhost.Plugin
 	unitsByKind map[string]contract.Unit
+
+	writeMu  sync.Mutex
+	taskMu   sync.Mutex
+	nextTask int64
+	tasks    map[string]*backgroundTaskRecord
+}
+
+type backgroundTaskRecord struct {
+	id        string
+	requestID string
+	runID     string
+	unitName  string
+	unit      contract.Unit
+	env       *remoteRunEnv
+	task      contract.BackgroundTask
+	stopping  bool
 }
 
 func newServer(plugin Plugin) *server {
@@ -34,6 +50,7 @@ func newServer(plugin Plugin) *server {
 	return &server{
 		manifest:    ManifestFromUnits(plugin.Name, plugin.Version, plugin.Units),
 		unitsByKind: unitsByKind,
+		tasks:       make(map[string]*backgroundTaskRecord),
 	}
 }
 
@@ -62,7 +79,7 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 
 		switch frame.Body.(type) {
 		case *protocol.Frame_HandshakeRequest:
-			if err := writer.WriteFrame(&protocol.Frame{
+			if err := srv.writeFrame(writer, &protocol.Frame{
 				RequestId: frame.GetRequestId(),
 				Body: &protocol.Frame_HandshakeResponse{HandshakeResponse: &protocol.HandshakeResponse{
 					Manifest:         manifestToProto(srv.manifest),
@@ -72,7 +89,7 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 				return err
 			}
 		case *protocol.Frame_ListUnitsRequest:
-			if err := writer.WriteFrame(&protocol.Frame{
+			if err := srv.writeFrame(writer, &protocol.Frame{
 				RequestId: frame.GetRequestId(),
 				Body: &protocol.Frame_ListUnitsResponse{ListUnitsResponse: &protocol.ListUnitsResponse{
 					Units: unitsToProto(srv.manifest.Units),
@@ -92,28 +109,42 @@ func Serve(plugin Plugin, stdin io.Reader, stdout io.Writer) error {
 			if err := srv.handleRun(ctx, frame, frame.GetRunRequest(), reader, writer); err != nil {
 				return err
 			}
+		case *protocol.Frame_StartRequest:
+			if err := srv.handleStart(ctx, frame, frame.GetStartRequest(), reader, writer); err != nil {
+				return err
+			}
+		case *protocol.Frame_StopRequest:
+			if err := srv.handleStop(ctx, frame, frame.GetStopRequest(), writer); err != nil {
+				return err
+			}
 		default:
-			if err := writeProtocolError(writer, frame.GetRequestId(), "UNSUPPORTED", "unsupported frame"); err != nil {
+			if err := srv.writeProtocolError(writer, frame.GetRequestId(), "UNSUPPORTED", "unsupported frame"); err != nil {
 				return err
 			}
 		}
 	}
 }
 
+func (s *server) writeFrame(writer *protocol.FrameWriter, frame *protocol.Frame) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return writer.WriteFrame(frame)
+}
+
 func (s *server) handleValidate(ctx context.Context, frame *protocol.Frame, req *protocol.ValidateRequest, writer *protocol.FrameWriter) error {
 	unit, err := s.unit(req.GetKind())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
 	}
 	spec, err := decodeSpecMap(req.GetSpecJson())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
 	}
 	env := contract.NewTestRunEnv("", req.GetUnitName(), nil, spec)
 	if err := unit.Validate(ctx, env); err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
 	}
-	return writer.WriteFrame(&protocol.Frame{
+	return s.writeFrame(writer, &protocol.Frame{
 		RequestId: frame.GetRequestId(),
 		Body:      &protocol.Frame_ValidateResponse{ValidateResponse: &protocol.ValidateResponse{}},
 	})
@@ -122,11 +153,11 @@ func (s *server) handleValidate(ctx context.Context, frame *protocol.Frame, req 
 func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *protocol.PlanRequest, writer *protocol.FrameWriter) error {
 	unit, err := s.unit(req.GetKind())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
 	}
 	spec, err := decodeSpecMap(req.GetSpecJson())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
 	}
 	env := contract.NewTestRunEnv(req.GetRunId(), req.GetUnitName(), nil, spec)
 	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
@@ -135,13 +166,13 @@ func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *pro
 	}
 	plan, err := unit.Plan(ctx, env)
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
 	}
 	payload, err := encodeJSONPayload(plan)
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "PLAN_ERROR", err.Error())
 	}
-	return writer.WriteFrame(&protocol.Frame{
+	return s.writeFrame(writer, &protocol.Frame{
 		RequestId: frame.GetRequestId(),
 		Body:      &protocol.Frame_PlanResponse{PlanResponse: &protocol.PlanResponse{PlanJson: payload}},
 	})
@@ -150,74 +181,163 @@ func (s *server) handlePlan(ctx context.Context, frame *protocol.Frame, req *pro
 func (s *server) handleRun(ctx context.Context, frame *protocol.Frame, req *protocol.RunRequest, reader *protocol.FrameReader, writer *protocol.FrameWriter) error {
 	unit, err := s.unit(req.GetKind())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
 	spec, err := decodeSpecMap(req.GetSpecJson())
 	if err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
-	inputs := make(map[string]any, len(req.GetInputs()))
-	for name, value := range req.GetInputs() {
-		var decoded any
-		if value != nil && len(value.GetPayload()) > 0 {
-			if err := json.Unmarshal(value.GetPayload(), &decoded); err != nil {
-				return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", fmt.Sprintf("decode input %q json: %v", name, err))
-			}
-		}
-		inputs[name] = decoded
+	inputs, err := decodeInputValues(req.GetInputs())
+	if err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
-	env := newRemoteRunEnv(frame.GetRequestId(), req, inputs, spec, unit.Definition().Artifacts, reader, writer)
-	env.SetRunDuration(time.Duration(req.GetRunDurationMillis()) * time.Millisecond)
-	if req.GetWorkerCount() > 0 {
-		env.SetWorkerCount(int(req.GetWorkerCount()))
-	}
+	env := newRemoteRunEnv(frame.GetRequestId(), req, inputs, spec, unit.Definition().Artifacts, reader, func(out *protocol.Frame) error {
+		return s.writeFrame(writer, out)
+	})
+	configureRunEnv(env, req.GetRunDurationMillis(), req.GetWorkerCount())
 	if err := unit.Run(ctx, env); err != nil {
-		return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
 	}
-	for _, output := range unit.Definition().Outputs {
-		value, ok := env.Output(output.Name)
-		if !ok {
-			continue
-		}
-		payload, err := encodeJSONPayload(value)
-		if err != nil {
-			return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
-		}
-		var reportPayload []byte
-		if output.Meta.Reportable && !output.Meta.Sensitive {
-			reportValue := value
-			if reportable, ok := value.(contract.ReportableOutput); ok {
-				reportValue = reportable.ReportOutput()
-			}
-			reportPayload, err = encodeJSONPayload(reportValue)
-			if err != nil {
-				return writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
-			}
-		}
-		if err := writer.WriteFrame(&protocol.Frame{
-			RequestId: frame.GetRequestId(),
-			Body: &protocol.Frame_SetOutput{SetOutput: &protocol.SetOutput{
-				Name: output.Name,
-				Value: &protocol.PortValue{
-					Type:          string(output.Type),
-					Encoding:      "json",
-					Transport:     string(output.Meta.Transport),
-					Sensitive:     output.Meta.Sensitive,
-					Reportable:    output.Meta.Reportable,
-					Payload:       payload,
-					ReportPayload: reportPayload,
-				},
-			}},
-		}); err != nil {
-			return err
-		}
+	if err := s.writeOutputs(frame.GetRequestId(), env, unit, writer); err != nil {
+		return err
 	}
 	if err := s.writeMetricFlush(frame.GetRequestId(), env, writer); err != nil {
 		return err
 	}
-	return writer.WriteFrame(&protocol.Frame{
+	return s.writeFrame(writer, &protocol.Frame{
 		RequestId: frame.GetRequestId(),
 		Body:      &protocol.Frame_TerminalStatus{TerminalStatus: &protocol.TerminalStatus{Ok: true}},
+	})
+}
+
+func (s *server) handleStart(ctx context.Context, frame *protocol.Frame, req *protocol.StartRequest, reader *protocol.FrameReader, writer *protocol.FrameWriter) error {
+	unit, err := s.unit(req.GetKind())
+	if err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+	}
+	background, ok := unit.(contract.BackgroundUnit)
+	if !ok {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", fmt.Sprintf("unit kind %q is not a background unit", req.GetKind()))
+	}
+	spec, err := decodeSpecMap(req.GetSpecJson())
+	if err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", err.Error())
+	}
+	inputs, err := decodeInputValues(req.GetInputs())
+	if err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	runReq := &protocol.RunRequest{
+		UnitName:          req.GetUnitName(),
+		Kind:              req.GetKind(),
+		RunId:             req.GetRunId(),
+		RunDurationMillis: req.GetRunDurationMillis(),
+		WorkerCount:       req.GetWorkerCount(),
+		SpecJson:          req.GetSpecJson(),
+		Inputs:            req.GetInputs(),
+	}
+	env := newRemoteRunEnv(frame.GetRequestId(), runReq, inputs, spec, unit.Definition().Artifacts, reader, func(out *protocol.Frame) error {
+		return s.writeFrame(writer, out)
+	})
+	configureRunEnv(env, req.GetRunDurationMillis(), req.GetWorkerCount())
+	task, err := background.Start(ctx, env)
+	if err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	record := s.storeBackgroundTask(frame.GetRequestId(), req.GetRunId(), req.GetUnitName(), unit, env, task)
+	if err := s.writeFrame(writer, &protocol.Frame{
+		RequestId:      frame.GetRequestId(),
+		RunId:          req.GetRunId(),
+		UnitInstanceId: req.GetUnitName(),
+		Body:           &protocol.Frame_StartResponse{StartResponse: &protocol.StartResponse{TaskId: record.id}},
+	}); err != nil {
+		return err
+	}
+	go s.monitorBackgroundTask(record.id, task, writer)
+	return nil
+}
+
+func (s *server) handleStop(ctx context.Context, frame *protocol.Frame, req *protocol.StopRequest, writer *protocol.FrameWriter) error {
+	record, ok := s.takeBackgroundTask(req.GetTaskId())
+	if !ok {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "CONFIG_ERROR", fmt.Sprintf("background task %q is not active", req.GetTaskId()))
+	}
+	if err := record.task.Stop(ctx); err != nil {
+		return s.writeProtocolError(writer, frame.GetRequestId(), "RUN_ERROR", err.Error())
+	}
+	if err := s.writeOutputs(record.requestID, record.env, record.unit, writer); err != nil {
+		return err
+	}
+	if err := s.writeMetricFlush(record.requestID, record.env, writer); err != nil {
+		return err
+	}
+	return s.writeFrame(writer, &protocol.Frame{
+		RequestId:      frame.GetRequestId(),
+		RunId:          record.runID,
+		UnitInstanceId: record.unitName,
+		Body:           &protocol.Frame_StopResponse{StopResponse: &protocol.StopResponse{}},
+	})
+}
+
+func (s *server) storeBackgroundTask(requestID, runID, unitName string, unit contract.Unit, env *remoteRunEnv, task contract.BackgroundTask) *backgroundTaskRecord {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	s.nextTask++
+	id := fmt.Sprintf("bg-%d", s.nextTask)
+	record := &backgroundTaskRecord{
+		id:        id,
+		requestID: requestID,
+		runID:     runID,
+		unitName:  unitName,
+		unit:      unit,
+		env:       env,
+		task:      task,
+	}
+	s.tasks[id] = record
+	return record
+}
+
+func (s *server) takeBackgroundTask(taskID string) (*backgroundTaskRecord, bool) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	record, ok := s.tasks[taskID]
+	if !ok {
+		return nil, false
+	}
+	record.stopping = true
+	delete(s.tasks, taskID)
+	return record, true
+}
+
+func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTask, writer *protocol.FrameWriter) {
+	err, ok := <-task.Done()
+	if !ok {
+		err = nil
+	}
+	s.taskMu.Lock()
+	record, active := s.tasks[taskID]
+	if active {
+		delete(s.tasks, taskID)
+	}
+	s.taskMu.Unlock()
+	if !active || record.stopping {
+		return
+	}
+	event := "completed"
+	var rpcErr *protocol.Error
+	if err != nil {
+		event = "fatal_error"
+		rpcErr = &protocol.Error{Code: "BACKGROUND_ERROR", Message: err.Error()}
+	}
+	_ = s.writeFrame(writer, &protocol.Frame{
+		RequestId:      record.requestID,
+		RunId:          record.runID,
+		UnitInstanceId: record.unitName,
+		Body: &protocol.Frame_BackgroundEvent{BackgroundEvent: &protocol.BackgroundEvent{
+			TaskId: taskID,
+			Event:  event,
+			Error:  rpcErr,
+		}},
 	})
 }
 
@@ -242,10 +362,52 @@ func (s *server) writeMetricFlush(requestID string, env metricSnapshotReader, wr
 			Max:    snapshot.Max,
 		})
 	}
-	return writer.WriteFrame(&protocol.Frame{
+	return s.writeFrame(writer, &protocol.Frame{
 		RequestId: requestID,
 		Body:      &protocol.Frame_MetricFlush{MetricFlush: &protocol.MetricFlush{Metrics: metrics}},
 	})
+}
+
+func (s *server) writeOutputs(requestID string, env *remoteRunEnv, unit contract.Unit, writer *protocol.FrameWriter) error {
+	for _, output := range unit.Definition().Outputs {
+		value, ok := env.Output(output.Name)
+		if !ok {
+			continue
+		}
+		payload, err := encodeJSONPayload(value)
+		if err != nil {
+			return s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error())
+		}
+		var reportPayload []byte
+		if output.Meta.Reportable && !output.Meta.Sensitive {
+			reportValue := value
+			if reportable, ok := value.(contract.ReportableOutput); ok {
+				reportValue = reportable.ReportOutput()
+			}
+			reportPayload, err = encodeJSONPayload(reportValue)
+			if err != nil {
+				return s.writeProtocolError(writer, requestID, "RUN_ERROR", err.Error())
+			}
+		}
+		if err := s.writeFrame(writer, &protocol.Frame{
+			RequestId: requestID,
+			Body: &protocol.Frame_SetOutput{SetOutput: &protocol.SetOutput{
+				Name: output.Name,
+				Value: &protocol.PortValue{
+					Type:          string(output.Type),
+					Encoding:      "json",
+					Transport:     string(output.Meta.Transport),
+					Sensitive:     output.Meta.Sensitive,
+					Reportable:    output.Meta.Reportable,
+					Payload:       payload,
+					ReportPayload: reportPayload,
+				},
+			}},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const artifactChunkMaxBytes = 64 << 10
@@ -256,13 +418,13 @@ type remoteRunEnv struct {
 	runID        string
 	unitName     string
 	reader       *protocol.FrameReader
-	writer       *protocol.FrameWriter
+	writeFrame   func(*protocol.Frame) error
 	artifactDefs map[string]contract.ArtifactDef
 
 	ioMu sync.Mutex
 }
 
-func newRemoteRunEnv(requestID string, req *protocol.RunRequest, inputs map[string]any, spec map[string]any, artifacts []contract.ArtifactDef, reader *protocol.FrameReader, writer *protocol.FrameWriter) *remoteRunEnv {
+func newRemoteRunEnv(requestID string, req *protocol.RunRequest, inputs map[string]any, spec map[string]any, artifacts []contract.ArtifactDef, reader *protocol.FrameReader, writeFrame func(*protocol.Frame) error) *remoteRunEnv {
 	artifactDefs := make(map[string]contract.ArtifactDef, len(artifacts))
 	for _, artifact := range artifacts {
 		artifactDefs[artifact.Name] = artifact
@@ -273,7 +435,7 @@ func newRemoteRunEnv(requestID string, req *protocol.RunRequest, inputs map[stri
 		runID:        req.GetRunId(),
 		unitName:     req.GetUnitName(),
 		reader:       reader,
-		writer:       writer,
+		writeFrame:   writeFrame,
 		artifactDefs: artifactDefs,
 	}
 }
@@ -287,7 +449,7 @@ func (e *remoteRunEnv) OpenArtifact(name string) (io.WriteCloser, error) {
 	}
 	e.ioMu.Lock()
 	defer e.ioMu.Unlock()
-	if err := e.writer.WriteFrame(&protocol.Frame{
+	if err := e.writeFrame(&protocol.Frame{
 		RequestId:      e.requestID,
 		RunId:          e.runID,
 		UnitInstanceId: e.unitName,
@@ -357,7 +519,7 @@ func (w *remoteArtifactWriter) Close() error {
 func (e *remoteRunEnv) writeArtifactChunk(handle string, sequence int64, data []byte) error {
 	e.ioMu.Lock()
 	defer e.ioMu.Unlock()
-	if err := e.writer.WriteFrame(&protocol.Frame{
+	if err := e.writeFrame(&protocol.Frame{
 		RequestId:      e.requestID,
 		RunId:          e.runID,
 		UnitInstanceId: e.unitName,
@@ -375,7 +537,7 @@ func (e *remoteRunEnv) writeArtifactChunk(handle string, sequence int64, data []
 func (e *remoteRunEnv) closeArtifact(handle, name string) error {
 	e.ioMu.Lock()
 	defer e.ioMu.Unlock()
-	if err := e.writer.WriteFrame(&protocol.Frame{
+	if err := e.writeFrame(&protocol.Frame{
 		RequestId:      e.requestID,
 		RunId:          e.runID,
 		UnitInstanceId: e.unitName,
@@ -428,6 +590,27 @@ func decodeSpecMap(data []byte) (map[string]any, error) {
 	return spec, nil
 }
 
+func decodeInputValues(values map[string]*protocol.PortValue) (map[string]any, error) {
+	inputs := make(map[string]any, len(values))
+	for name, value := range values {
+		var decoded any
+		if value != nil && len(value.GetPayload()) > 0 {
+			if err := json.Unmarshal(value.GetPayload(), &decoded); err != nil {
+				return nil, fmt.Errorf("decode input %q json: %w", name, err)
+			}
+		}
+		inputs[name] = decoded
+	}
+	return inputs, nil
+}
+
+func configureRunEnv(env *remoteRunEnv, durationMillis int64, workerCount int32) {
+	env.SetRunDuration(time.Duration(durationMillis) * time.Millisecond)
+	if workerCount > 0 {
+		env.SetWorkerCount(int(workerCount))
+	}
+}
+
 func encodeJSONPayload(value any) ([]byte, error) {
 	payload, err := json.Marshal(value)
 	if err != nil {
@@ -436,8 +619,8 @@ func encodeJSONPayload(value any) ([]byte, error) {
 	return payload, nil
 }
 
-func writeProtocolError(writer *protocol.FrameWriter, requestID, code, message string) error {
-	return writer.WriteFrame(&protocol.Frame{
+func (s *server) writeProtocolError(writer *protocol.FrameWriter, requestID, code, message string) error {
+	return s.writeFrame(writer, &protocol.Frame{
 		RequestId: requestID,
 		Body: &protocol.Frame_Error{Error: &protocol.Error{
 			Code:    code,

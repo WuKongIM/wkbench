@@ -439,6 +439,336 @@ func TestServerRunTypedStructInputFromRPC(t *testing.T) {
 	}
 }
 
+func TestServerStartStopBackgroundUnit(t *testing.T) {
+	unit := &serverBackgroundUnit{}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	writer := protocol.NewFrameWriter(&out)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+
+	if err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, writer); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	response := readServerTestFrame(t, &out)
+	taskID := response.GetStartResponse().GetTaskId()
+	if taskID == "" {
+		t.Fatalf("empty task id")
+	}
+	if unit.runCalled {
+		t.Fatalf("Run was called for background start")
+	}
+	if !unit.startCalled {
+		t.Fatalf("Start was not called")
+	}
+
+	out.Reset()
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	stopResponse := readServerTestFrame(t, &out)
+	if stopResponse.GetStopResponse() == nil {
+		t.Fatalf("expected stop response, got %T", stopResponse.Body)
+	}
+	if !unit.stopCalled {
+		t.Fatalf("Stop was not called")
+	}
+}
+
+func TestServerStartRejectsNonBackgroundUnit(t *testing.T) {
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{serverNormalUnit{}}})
+	var out bytes.Buffer
+	frame := &protocol.Frame{
+		RequestId: "start-normal",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "normal",
+			Kind:     "test.server_normal/v1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	if err := srv.handleStart(context.Background(), frame, frame.GetStartRequest(), nil, protocol.NewFrameWriter(&out)); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	response := readServerTestFrame(t, &out)
+
+	rpcErr := response.GetError()
+	if rpcErr == nil {
+		t.Fatalf("expected error frame")
+	}
+	if rpcErr.GetCode() != "CONFIG_ERROR" {
+		t.Fatalf("error code = %q, want CONFIG_ERROR", rpcErr.GetCode())
+	}
+}
+
+func TestServerStopFlushesBackgroundOutputsAndMetrics(t *testing.T) {
+	unit := &serverBackgroundUnit{writeFinalState: true}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	writer := protocol.NewFrameWriter(&out)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	if err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, writer); err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+	taskID := readServerTestFrame(t, &out).GetStartResponse().GetTaskId()
+
+	out.Reset()
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+
+	outputFrame := readServerTestFrame(t, &out)
+	if outputFrame.GetRequestId() != "start-1" {
+		t.Fatalf("output request id = %q, want start-1", outputFrame.GetRequestId())
+	}
+	output := outputFrame.GetSetOutput()
+	if output == nil || output.GetName() != "summary" {
+		t.Fatalf("output frame = %#v", outputFrame)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal(output.GetValue().GetPayload(), &summary); err != nil {
+		t.Fatalf("decode output payload: %v", err)
+	}
+	if summary["stopped"] != true {
+		t.Fatalf("summary = %#v", summary)
+	}
+	metricFrame := readServerTestFrame(t, &out)
+	if metricFrame.GetRequestId() != "start-1" {
+		t.Fatalf("metric request id = %q, want start-1", metricFrame.GetRequestId())
+	}
+	flush := metricFrame.GetMetricFlush()
+	if flush == nil || len(flush.GetMetrics()) != 1 || flush.GetMetrics()[0].GetName() != "background_ticks" || flush.GetMetrics()[0].GetCount() != 1 || flush.GetMetrics()[0].GetSum() != 3 {
+		t.Fatalf("metric flush = %#v", flush)
+	}
+	stopResponse := readServerTestFrame(t, &out)
+	if stopResponse.GetRequestId() != "stop-1" || stopResponse.GetStopResponse() == nil {
+		t.Fatalf("stop response = %#v", stopResponse)
+	}
+}
+
+func TestServerStartStopStreamsBackgroundArtifacts(t *testing.T) {
+	unit := &serverBackgroundUnit{writeArtifacts: true}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	toHostReader, toHostWriter := io.Pipe()
+	toPluginReader, toPluginWriter := io.Pipe()
+	serverErr := make(chan error, 1)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+
+	go func() {
+		err := srv.handleStart(
+			context.Background(),
+			startFrame,
+			startFrame.GetStartRequest(),
+			protocol.NewFrameReader(toPluginReader, 16<<20),
+			protocol.NewFrameWriter(toHostWriter),
+		)
+		serverErr <- err
+	}()
+
+	hostReader := protocol.NewFrameReader(toHostReader, 16<<20)
+	hostWriter := protocol.NewFrameWriter(toPluginWriter)
+	openFrame := readServerPipeFrame(t, hostReader)
+	open := openFrame.GetArtifactOpen()
+	if open == nil || open.GetName() != "background.jsonl" {
+		t.Fatalf("open frame = %#v", openFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_ArtifactOpened{ArtifactOpened: &protocol.ArtifactOpened{
+			Name:   "background.jsonl",
+			Handle: "artifact-1",
+		}},
+	}); err != nil {
+		t.Fatalf("write opened response: %v", err)
+	}
+	chunk := readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	if chunk == nil || chunk.GetHandle() != "artifact-1" || string(chunk.GetData()) != "start\n" {
+		t.Fatalf("chunk = %#v", chunk)
+	}
+	closeFrame := readServerPipeFrame(t, hostReader)
+	if closeArtifact := closeFrame.GetArtifactClose(); closeArtifact == nil || closeArtifact.GetHandle() != "artifact-1" {
+		t.Fatalf("close frame = %#v", closeFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_ArtifactClosed{ArtifactClosed: &protocol.ArtifactClosed{
+			Handle:    "artifact-1",
+			SizeBytes: int64(len("start\n")),
+		}},
+	}); err != nil {
+		t.Fatalf("write closed response: %v", err)
+	}
+	startResponse := readServerPipeFrame(t, hostReader)
+	taskID := startResponse.GetStartResponse().GetTaskId()
+	if taskID == "" {
+		t.Fatalf("start response = %#v", startResponse)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	serverErr = make(chan error, 1)
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: taskID}},
+	}
+	go func() {
+		err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), protocol.NewFrameWriter(toHostWriter))
+		_ = toHostWriter.Close()
+		serverErr <- err
+	}()
+	openFrame = readServerPipeFrame(t, hostReader)
+	open = openFrame.GetArtifactOpen()
+	if open == nil || open.GetName() != "background.jsonl" {
+		t.Fatalf("stop open frame = %#v", openFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_ArtifactOpened{ArtifactOpened: &protocol.ArtifactOpened{
+			Name:   "background.jsonl",
+			Handle: "artifact-2",
+		}},
+	}); err != nil {
+		t.Fatalf("write stop opened response: %v", err)
+	}
+	chunk = readServerPipeFrame(t, hostReader).GetArtifactChunk()
+	if chunk == nil || chunk.GetHandle() != "artifact-2" || string(chunk.GetData()) != "stop\n" {
+		t.Fatalf("stop chunk = %#v", chunk)
+	}
+	closeFrame = readServerPipeFrame(t, hostReader)
+	if closeArtifact := closeFrame.GetArtifactClose(); closeArtifact == nil || closeArtifact.GetHandle() != "artifact-2" {
+		t.Fatalf("stop close frame = %#v", closeFrame)
+	}
+	if err := hostWriter.WriteFrame(&protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_ArtifactClosed{ArtifactClosed: &protocol.ArtifactClosed{
+			Handle:    "artifact-2",
+			SizeBytes: int64(len("stop\n")),
+		}},
+	}); err != nil {
+		t.Fatalf("write stop closed response: %v", err)
+	}
+	stopResponse := readServerPipeFrame(t, hostReader)
+	if stopResponse.GetStopResponse() == nil {
+		t.Fatalf("stop response = %#v", stopResponse)
+	}
+	_ = toPluginWriter.Close()
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+}
+
+func TestServerBackgroundTaskDoneErrorEmitsFatalEvent(t *testing.T) {
+	unit := &serverBackgroundUnit{done: make(chan error, 1)}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	toHostReader, toHostWriter := io.Pipe()
+	serverErr := make(chan error, 1)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	go func() {
+		err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, protocol.NewFrameWriter(toHostWriter))
+		serverErr <- err
+	}()
+
+	hostReader := protocol.NewFrameReader(toHostReader, 16<<20)
+	taskID := readServerPipeFrame(t, hostReader).GetStartResponse().GetTaskId()
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	unit.done <- fmt.Errorf("collector failed")
+	eventFrame := readServerPipeFrame(t, hostReader)
+	event := eventFrame.GetBackgroundEvent()
+	if event == nil {
+		t.Fatalf("event frame = %#v", eventFrame)
+	}
+	if event.GetTaskId() != taskID || event.GetEvent() != "fatal_error" {
+		t.Fatalf("event = %#v", event)
+	}
+	if event.GetError() == nil || event.GetError().GetMessage() != "collector failed" {
+		t.Fatalf("event error = %#v", event.GetError())
+	}
+	_ = toHostWriter.Close()
+}
+
+func TestServerBackgroundTaskDoneNilEmitsCompletedEvent(t *testing.T) {
+	unit := &serverBackgroundUnit{done: make(chan error, 1)}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	toHostReader, toHostWriter := io.Pipe()
+	serverErr := make(chan error, 1)
+	startFrame := &protocol.Frame{
+		RequestId: "start-1",
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName: "bg",
+			Kind:     "test.server_background/v1",
+			RunId:    "run-1",
+			SpecJson: []byte(`{}`),
+		}},
+	}
+	go func() {
+		err := srv.handleStart(context.Background(), startFrame, startFrame.GetStartRequest(), nil, protocol.NewFrameWriter(toHostWriter))
+		serverErr <- err
+	}()
+
+	hostReader := protocol.NewFrameReader(toHostReader, 16<<20)
+	taskID := readServerPipeFrame(t, hostReader).GetStartResponse().GetTaskId()
+	if err := <-serverErr; err != nil {
+		t.Fatalf("handle start: %v", err)
+	}
+
+	unit.done <- nil
+	eventFrame := readServerPipeFrame(t, hostReader)
+	event := eventFrame.GetBackgroundEvent()
+	if event == nil {
+		t.Fatalf("event frame = %#v", eventFrame)
+	}
+	if event.GetTaskId() != taskID || event.GetEvent() != "completed" {
+		t.Fatalf("event = %#v", event)
+	}
+	if event.GetError() != nil {
+		t.Fatalf("event error = %#v, want nil", event.GetError())
+	}
+	_ = toHostWriter.Close()
+}
+
 func readServerTestFrame(t *testing.T, buf *bytes.Buffer) *protocol.Frame {
 	t.Helper()
 	frame, err := protocol.NewFrameReader(buf, 16<<20).ReadFrame()
@@ -696,3 +1026,100 @@ func (noopBackgroundTask) Done() <-chan error {
 	ch := make(chan error)
 	return ch
 }
+
+type serverBackgroundUnit struct {
+	startCalled     bool
+	runCalled       bool
+	stopCalled      bool
+	writeFinalState bool
+	writeArtifacts  bool
+	done            chan error
+	env             contract.RunEnv
+}
+
+func (u *serverBackgroundUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.server_background/v1",
+		Outputs: []contract.PortDef{{
+			Name: "summary",
+			Type: "port.test.summary/v1",
+			Meta: contract.PortMeta{Reportable: true},
+		}},
+		Metrics: []contract.MetricDef{{
+			Name: "background_ticks",
+			Type: "counter",
+		}},
+		Artifacts: []contract.ArtifactDef{{
+			Name:        "background.jsonl",
+			ContentType: "application/jsonl",
+		}},
+	}
+}
+
+func (u *serverBackgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (u *serverBackgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (u *serverBackgroundUnit) Run(context.Context, contract.RunEnv) error {
+	u.runCalled = true
+	return nil
+}
+func (u *serverBackgroundUnit) Start(ctx context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	u.startCalled = true
+	u.env = env
+	if u.done == nil {
+		u.done = make(chan error)
+	}
+	if u.writeArtifacts {
+		if err := writeServerBackgroundArtifact(env, "start\n"); err != nil {
+			return nil, err
+		}
+	}
+	return serverBackgroundTask{unit: u}, nil
+}
+
+type serverBackgroundTask struct {
+	unit *serverBackgroundUnit
+}
+
+func (t serverBackgroundTask) Stop(context.Context) error {
+	t.unit.stopCalled = true
+	defer close(t.unit.done)
+	if t.unit.writeFinalState {
+		if err := t.unit.env.SetOutput("summary", map[string]any{"stopped": true}); err != nil {
+			return err
+		}
+		t.unit.env.EmitCounter("background_ticks", 3, nil)
+	}
+	if t.unit.writeArtifacts {
+		return writeServerBackgroundArtifact(t.unit.env, "stop\n")
+	}
+	return nil
+}
+
+func (t serverBackgroundTask) Done() <-chan error {
+	return t.unit.done
+}
+
+func writeServerBackgroundArtifact(env contract.RunEnv, value string) error {
+	artifact, err := env.OpenArtifact("background.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := artifact.Write([]byte(value)); err != nil {
+		_ = artifact.Close()
+		return err
+	}
+	return artifact.Close()
+}
+
+type serverNormalUnit struct{}
+
+func (serverNormalUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.server_normal/v1"}
+}
+func (serverNormalUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (serverNormalUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (serverNormalUnit) Run(context.Context, contract.RunEnv) error { return nil }
