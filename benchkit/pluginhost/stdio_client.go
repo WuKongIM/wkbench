@@ -35,6 +35,7 @@ type StdioClient struct {
 	reqMu    sync.Mutex
 	waiters  map[string]*requestWaiter
 	bgTasks  map[string]*remoteBackgroundTask
+	bgStarts map[string]*remoteBackgroundTask
 }
 
 var errStdioClientClosed = errors.New("stdio plugin client closed")
@@ -56,7 +57,20 @@ func (w *requestWaiter) close() {
 	})
 }
 
-type remoteBackgroundTask struct{}
+type remoteBackgroundTask struct {
+	client         *StdioClient
+	taskID         string
+	startRequestID string
+	runID          string
+	unitName       string
+	env            contract.RunEnv
+	artifacts      *runArtifactState
+	done           chan error
+	completeOnce   sync.Once
+	cleanupOnce    sync.Once
+	completed      bool
+	stopping       bool
+}
 
 type StdioCommand struct {
 	Path string
@@ -91,6 +105,7 @@ func StartStdioCommand(ctx context.Context, command StdioCommand) (*StdioClient,
 		pumpDone: make(chan error, 1),
 		waiters:  make(map[string]*requestWaiter),
 		bgTasks:  make(map[string]*remoteBackgroundTask),
+		bgStarts: make(map[string]*remoteBackgroundTask),
 	}
 	go client.readLoop(reader)
 	return client, nil
@@ -105,23 +120,26 @@ func (c *StdioClient) readLoop(reader *protocol.FrameReader) {
 			c.pumpDone <- err
 			return
 		}
-		if event := frame.GetBackgroundEvent(); event != nil {
-			c.dispatchBackgroundEvent(event)
-			continue
-		}
 		c.reqMu.Lock()
 		waiter := c.waiters[frame.GetRequestId()]
 		c.reqMu.Unlock()
-		if waiter == nil {
-			err := fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId())
-			c.failAllWaiters(err)
-			c.failAllBackgroundTasks(err)
-			c.shutdown(true)
+		if waiter != nil {
+			if ok := c.deliverWaiterResult(frame.GetRequestId(), waiter, readResult{frame: frame}); !ok {
+				continue
+			}
 			continue
 		}
-		if ok := c.deliverWaiterResult(frame.GetRequestId(), waiter, readResult{frame: frame}); !ok {
+		if event := frame.GetBackgroundEvent(); event != nil {
+			if c.dispatchBackgroundEvent(frame, event) {
+				continue
+			}
+		} else if c.dispatchBackgroundLifecycleFrame(frame) {
 			continue
 		}
+		protocolErr := fmt.Errorf("unexpected plugin frame for request %q", frame.GetRequestId())
+		c.failAllWaiters(protocolErr)
+		c.failAllBackgroundTasks(protocolErr)
+		c.shutdown(true)
 	}
 }
 
@@ -299,43 +317,13 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 		if frame.GetRequestId() != requestID {
 			return fmt.Errorf("run response request id = %q, want %q", frame.GetRequestId(), requestID)
 		}
-		switch body := frame.Body.(type) {
-		case *protocol.Frame_SetOutput:
-			if err := setOutputFromFrame(env, body.SetOutput); err != nil {
+		if handled, err := c.handleRunLifecycleFrame(requestID, req.RunID, req.UnitName, env, artifacts, frame); handled {
+			if err != nil {
 				return err
 			}
-		case *protocol.Frame_MetricFlush:
-			applyMetricFlush(env, body.MetricFlush)
-		case *protocol.Frame_ArtifactOpen:
-			opened, err := artifacts.open(body.ArtifactOpen)
-			if err != nil {
-				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
-			}
-			if err := c.writeFrame(&protocol.Frame{
-				RequestId:      requestID,
-				RunId:          req.RunID,
-				UnitInstanceId: req.UnitName,
-				Body:           &protocol.Frame_ArtifactOpened{ArtifactOpened: opened},
-			}); err != nil {
-				return fmt.Errorf("write artifact opened response: %w", err)
-			}
-		case *protocol.Frame_ArtifactChunk:
-			if err := artifacts.write(body.ArtifactChunk); err != nil {
-				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
-			}
-		case *protocol.Frame_ArtifactClose:
-			closed, err := artifacts.close(body.ArtifactClose)
-			if err != nil {
-				return writeRunArtifactError(c.writeFrame, requestID, req.RunID, req.UnitName, err)
-			}
-			if err := c.writeFrame(&protocol.Frame{
-				RequestId:      requestID,
-				RunId:          req.RunID,
-				UnitInstanceId: req.UnitName,
-				Body:           &protocol.Frame_ArtifactClosed{ArtifactClosed: closed},
-			}); err != nil {
-				return fmt.Errorf("write artifact closed response: %w", err)
-			}
+			continue
+		}
+		switch body := frame.Body.(type) {
 		case *protocol.Frame_TerminalStatus:
 			if body.TerminalStatus.GetOk() {
 				return nil
@@ -353,7 +341,208 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 }
 
 func (c *StdioClient) Start(ctx context.Context, req StartRequest, env contract.RunEnv) (contract.BackgroundTask, error) {
-	return nil, errors.New("stdio plugin background Start is not implemented")
+	if err := ctx.Err(); err != nil {
+		c.shutdown(true)
+		c.startWait()
+		return nil, err
+	}
+
+	inputs, err := encodeInputPortValues(req.InputDefs, req.InputSourceDefs, req.Inputs)
+	if err != nil {
+		return nil, err
+	}
+
+	requestID := c.nextRequestID("start")
+	startFrame := &protocol.Frame{
+		RequestId:      requestID,
+		RunId:          req.RunID,
+		UnitInstanceId: req.UnitName,
+		Body: &protocol.Frame_StartRequest{StartRequest: &protocol.StartRequest{
+			UnitName:          req.UnitName,
+			Kind:              req.Kind,
+			RunId:             req.RunID,
+			RunDurationMillis: req.RunDurationMillis,
+			WorkerCount:       int32(req.WorkerCount),
+			SpecJson:          req.SpecJSON,
+			Inputs:            inputs,
+		}},
+	}
+	waiter := c.registerWaiter(requestID)
+	defer c.unregisterWaiter(requestID)
+
+	task := &remoteBackgroundTask{
+		client:         c,
+		startRequestID: requestID,
+		runID:          req.RunID,
+		unitName:       req.UnitName,
+		env:            env,
+		artifacts:      newRunArtifactState(env),
+		done:           make(chan error, 1),
+	}
+	c.registerBackgroundTask(task)
+	startFailed := true
+	defer func() {
+		if startFailed {
+			task.finish(errStdioClientClosed)
+		}
+	}()
+
+	if err := c.writeFrame(startFrame); err != nil {
+		return nil, fmt.Errorf("write start request: %w", err)
+	}
+
+	for {
+		frame, err := c.waitForRequestFrame(ctx, waiter, "start")
+		if err != nil {
+			return nil, err
+		}
+		if frame.GetRequestId() != requestID {
+			return nil, fmt.Errorf("start response request id = %q, want %q", frame.GetRequestId(), requestID)
+		}
+		if handled, err := c.handleRunLifecycleFrame(requestID, req.RunID, req.UnitName, env, task.artifacts, frame); handled {
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if rpcErr := frame.GetError(); rpcErr != nil {
+			return nil, pluginRPCError(rpcErr)
+		}
+		response := frame.GetStartResponse()
+		if response == nil {
+			return nil, fmt.Errorf("expected start response frame")
+		}
+		if response.GetTaskId() == "" {
+			return nil, fmt.Errorf("start response missing task id")
+		}
+		c.registerBackgroundTaskID(task, response.GetTaskId())
+		startFailed = false
+		return task, nil
+	}
+}
+
+func (t *remoteBackgroundTask) Done() <-chan error {
+	if t == nil {
+		ch := make(chan error)
+		close(ch)
+		return ch
+	}
+	return t.done
+}
+
+func (t *remoteBackgroundTask) Stop(ctx context.Context) (err error) {
+	if t == nil {
+		return nil
+	}
+	t.markStopping()
+	defer func() {
+		t.finish(err)
+	}()
+	if err := ctx.Err(); err != nil {
+		t.client.shutdown(true)
+		t.client.startWait()
+		return err
+	}
+
+	requestID := t.client.nextRequestID("stop")
+	waiter := t.client.registerWaiter(requestID)
+	defer t.client.unregisterWaiter(requestID)
+	if err := t.client.writeFrame(&protocol.Frame{
+		RequestId:      requestID,
+		RunId:          t.runID,
+		UnitInstanceId: t.unitName,
+		Body:           &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: t.taskID}},
+	}); err != nil {
+		return fmt.Errorf("write stop request: %w", err)
+	}
+	response, err := t.client.waitForRequestFrame(ctx, waiter, "stop")
+	if err != nil {
+		return err
+	}
+	if response.GetRequestId() != requestID {
+		return fmt.Errorf("stop response request id = %q, want %q", response.GetRequestId(), requestID)
+	}
+	if rpcErr := response.GetError(); rpcErr != nil {
+		return pluginRPCError(rpcErr)
+	}
+	if response.GetStopResponse() == nil {
+		return fmt.Errorf("expected stop response frame")
+	}
+	return nil
+}
+
+func (t *remoteBackgroundTask) finish(err error) {
+	if t == nil {
+		return
+	}
+	t.cleanupOnce.Do(func() {
+		t.client.unregisterBackgroundTask(t)
+		t.artifacts.closeAll()
+	})
+	t.completeDone(err)
+}
+
+func (t *remoteBackgroundTask) completeDone(err error) {
+	t.completeOnce.Do(func() {
+		t.done <- err
+		close(t.done)
+	})
+}
+
+func (t *remoteBackgroundTask) markStopping() {
+	t.client.reqMu.Lock()
+	t.stopping = true
+	t.client.reqMu.Unlock()
+}
+
+func (t *remoteBackgroundTask) isStopping() bool {
+	t.client.reqMu.Lock()
+	defer t.client.reqMu.Unlock()
+	return t.stopping
+}
+
+func (c *StdioClient) handleRunLifecycleFrame(requestID, runID, unitName string, env contract.RunEnv, artifacts *runArtifactState, frame *protocol.Frame) (bool, error) {
+	switch body := frame.Body.(type) {
+	case *protocol.Frame_SetOutput:
+		if err := setOutputFromFrame(env, body.SetOutput); err != nil {
+			return true, err
+		}
+	case *protocol.Frame_MetricFlush:
+		applyMetricFlush(env, body.MetricFlush)
+	case *protocol.Frame_ArtifactOpen:
+		opened, err := artifacts.open(body.ArtifactOpen)
+		if err != nil {
+			return true, writeRunArtifactError(c.writeFrame, requestID, runID, unitName, err)
+		}
+		if err := c.writeFrame(&protocol.Frame{
+			RequestId:      requestID,
+			RunId:          runID,
+			UnitInstanceId: unitName,
+			Body:           &protocol.Frame_ArtifactOpened{ArtifactOpened: opened},
+		}); err != nil {
+			return true, fmt.Errorf("write artifact opened response: %w", err)
+		}
+	case *protocol.Frame_ArtifactChunk:
+		if err := artifacts.write(body.ArtifactChunk); err != nil {
+			return true, writeRunArtifactError(c.writeFrame, requestID, runID, unitName, err)
+		}
+	case *protocol.Frame_ArtifactClose:
+		closed, err := artifacts.close(body.ArtifactClose)
+		if err != nil {
+			return true, writeRunArtifactError(c.writeFrame, requestID, runID, unitName, err)
+		}
+		if err := c.writeFrame(&protocol.Frame{
+			RequestId:      requestID,
+			RunId:          runID,
+			UnitInstanceId: unitName,
+			Body:           &protocol.Frame_ArtifactClosed{ArtifactClosed: closed},
+		}); err != nil {
+			return true, fmt.Errorf("write artifact closed response: %w", err)
+		}
+	default:
+		return false, nil
+	}
+	return true, nil
 }
 
 func writeRunArtifactError(write func(*protocol.Frame) error, requestID, runID, unitName string, err error) error {
@@ -487,9 +676,126 @@ func (c *StdioClient) waitForRequestFrame(ctx context.Context, waiter *requestWa
 	}
 }
 
-func (c *StdioClient) dispatchBackgroundEvent(*protocol.BackgroundEvent) {}
+func (c *StdioClient) registerBackgroundTask(task *remoteBackgroundTask) {
+	c.reqMu.Lock()
+	if c.bgTasks == nil {
+		c.bgTasks = make(map[string]*remoteBackgroundTask)
+	}
+	if c.bgStarts == nil {
+		c.bgStarts = make(map[string]*remoteBackgroundTask)
+	}
+	c.bgStarts[task.startRequestID] = task
+	if task.taskID != "" {
+		c.bgTasks[task.taskID] = task
+	}
+	c.reqMu.Unlock()
+}
 
-func (c *StdioClient) failAllBackgroundTasks(error) {}
+func (c *StdioClient) registerBackgroundTaskID(task *remoteBackgroundTask, taskID string) {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+	if task.completed {
+		return
+	}
+	if c.bgTasks == nil {
+		c.bgTasks = make(map[string]*remoteBackgroundTask)
+	}
+	task.taskID = taskID
+	c.bgTasks[taskID] = task
+}
+
+func (c *StdioClient) unregisterBackgroundTask(task *remoteBackgroundTask) {
+	c.reqMu.Lock()
+	task.completed = true
+	if c.bgTasks != nil && task.taskID != "" && c.bgTasks[task.taskID] == task {
+		delete(c.bgTasks, task.taskID)
+	}
+	if c.bgStarts != nil && c.bgStarts[task.startRequestID] == task {
+		delete(c.bgStarts, task.startRequestID)
+	}
+	c.reqMu.Unlock()
+}
+
+func (c *StdioClient) backgroundTaskForEvent(frame *protocol.Frame, event *protocol.BackgroundEvent) *remoteBackgroundTask {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+	if c.bgTasks != nil && event.GetTaskId() != "" {
+		if task := c.bgTasks[event.GetTaskId()]; task != nil {
+			return task
+		}
+	}
+	if c.bgStarts != nil && frame.GetRequestId() != "" {
+		return c.bgStarts[frame.GetRequestId()]
+	}
+	return nil
+}
+
+func (c *StdioClient) backgroundTaskForStartRequest(requestID string) *remoteBackgroundTask {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+	if c.bgStarts == nil {
+		return nil
+	}
+	return c.bgStarts[requestID]
+}
+
+func (c *StdioClient) dispatchBackgroundEvent(frame *protocol.Frame, event *protocol.BackgroundEvent) bool {
+	task := c.backgroundTaskForEvent(frame, event)
+	if task == nil {
+		return false
+	}
+	var err error
+	switch event.GetEvent() {
+	case "", "completed":
+	case "fatal_error":
+		err = pluginRPCError(event.GetError())
+	default:
+		err = fmt.Errorf("unknown background event %q", event.GetEvent())
+	}
+	if task.isStopping() {
+		task.completeDone(err)
+	} else {
+		task.finish(err)
+	}
+	return true
+}
+
+func (c *StdioClient) dispatchBackgroundLifecycleFrame(frame *protocol.Frame) bool {
+	task := c.backgroundTaskForStartRequest(frame.GetRequestId())
+	if task == nil {
+		return false
+	}
+	handled, err := c.handleRunLifecycleFrame(task.startRequestID, task.runID, task.unitName, task.env, task.artifacts, frame)
+	if err != nil {
+		task.finish(err)
+	}
+	return handled
+}
+
+func (c *StdioClient) failAllBackgroundTasks(err error) {
+	c.reqMu.Lock()
+	seen := make(map[*remoteBackgroundTask]struct{})
+	tasks := make([]*remoteBackgroundTask, 0, len(c.bgStarts)+len(c.bgTasks))
+	for _, task := range c.bgStarts {
+		if _, ok := seen[task]; ok {
+			continue
+		}
+		seen[task] = struct{}{}
+		tasks = append(tasks, task)
+	}
+	for _, task := range c.bgTasks {
+		if _, ok := seen[task]; ok {
+			continue
+		}
+		seen[task] = struct{}{}
+		tasks = append(tasks, task)
+	}
+	c.reqMu.Unlock()
+
+	for _, task := range tasks {
+		task.finish(err)
+	}
+}
 
 type runArtifactState struct {
 	env     contract.RunEnv

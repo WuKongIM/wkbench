@@ -270,6 +270,207 @@ func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	}
 }
 
+func TestStdioClientStartsAndStopsRemoteBackgroundUnit(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type backgroundUnit struct{}
+
+func (backgroundUnit) Definition() contract.Definition {
+	return contract.Definition{
+		Kind: "test.remote_background/v1",
+		Outputs: []contract.PortDef{{Name: "summary", Type: "port.test.summary/v1"}},
+		Metrics: []contract.MetricDef{{Name: "background_ticks", Type: "counter"}},
+		Artifacts: []contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}},
+	}
+}
+func (backgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (backgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (backgroundUnit) Run(context.Context, contract.RunEnv) error { return nil }
+func (backgroundUnit) Start(_ context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	return &backgroundTask{env: env, done: make(chan error, 1)}, nil
+}
+
+type backgroundTask struct {
+	env contract.RunEnv
+	done chan error
+}
+
+func (t *backgroundTask) Stop(context.Context) error {
+	if err := t.env.SetOutput("summary", map[string]any{"stopped": true}); err != nil {
+		return err
+	}
+	t.env.EmitCounter("background_ticks", 3, contract.Labels{"phase": "stop"})
+	writer, err := t.env.OpenArtifact("background.jsonl")
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write([]byte("{\"stopped\":true}\n")); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	t.done <- nil
+	close(t.done)
+	return nil
+}
+
+func (t *backgroundTask) Done() <-chan error { return t.done }
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "remote-background", Version: "dev", Units: []contract.Unit{backgroundUnit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "remote-background",
+		UnitName:   "bg",
+		Kind:       "test.remote_background/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	env.DeclareArtifacts([]contract.ArtifactDef{{Name: "background.jsonl", ContentType: "application/jsonl"}})
+	env.SetReportDir(t.TempDir())
+
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	if task == nil {
+		t.Fatal("start returned nil task")
+	}
+	if err := task.Stop(context.Background()); err != nil {
+		t.Fatalf("stop background: %v", err)
+	}
+	select {
+	case err := <-task.Done():
+		if err != nil {
+			t.Fatalf("done error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background task did not complete after Stop")
+	}
+
+	output, ok := env.Output("summary")
+	if !ok {
+		t.Fatal("missing summary output")
+	}
+	summary, ok := output.(map[string]any)
+	if !ok || summary["stopped"] != true {
+		t.Fatalf("summary output = %#v", output)
+	}
+	metrics := env.MetricSnapshots()
+	if len(metrics) != 1 || metrics[0].Name != "background_ticks" || metrics[0].Count != 1 || metrics[0].Sum != 3 || metrics[0].Labels["phase"] != "stop" {
+		t.Fatalf("metrics = %#v", metrics)
+	}
+	info := env.Artifacts()["background.jsonl"]
+	if info.Path == "" || info.ContentType != "application/jsonl" {
+		t.Fatalf("artifact info = %#v", info)
+	}
+	data, err := os.ReadFile(info.Path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(data) != "{\"stopped\":true}\n" {
+		t.Fatalf("artifact payload = %q", data)
+	}
+}
+
+func TestStdioClientRemoteBackgroundFatalEventCompletesDone(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"time"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type fatalBackgroundUnit struct{}
+
+func (fatalBackgroundUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.remote_background_fatal/v1"}
+}
+func (fatalBackgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (fatalBackgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (fatalBackgroundUnit) Run(context.Context, contract.RunEnv) error { return nil }
+func (fatalBackgroundUnit) Start(context.Context, contract.RunEnv) (contract.BackgroundTask, error) {
+	task := &fatalTask{done: make(chan error, 1)}
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		task.done <- errors.New("collector failed")
+		close(task.done)
+	}()
+	return task, nil
+}
+
+type fatalTask struct{ done chan error }
+
+func (t *fatalTask) Stop(context.Context) error { return nil }
+func (t *fatalTask) Done() <-chan error { return t.done }
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{Name: "remote-background-fatal", Version: "dev", Units: []contract.Unit{fatalBackgroundUnit{}}}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	req := UnitRequest{
+		PluginName: "remote-background-fatal",
+		UnitName:   "bg",
+		Kind:       "test.remote_background_fatal/v1",
+		RunID:      "run-bg",
+		SpecJSON:   []byte(`{}`),
+	}
+	env := contract.NewTestRunEnv(req.RunID, req.UnitName, nil, nil)
+	task, err := client.Start(context.Background(), StartRequest{RunRequest: RunRequest{UnitRequest: req}}, env)
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+
+	select {
+	case err := <-task.Done():
+		if err == nil || !strings.Contains(err.Error(), "collector failed") {
+			t.Fatalf("done error = %v, want collector failed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background task did not receive fatal event")
+	}
+}
+
 func TestStdioClientRunHandlesBurstOfResponseFrames(t *testing.T) {
 	pluginPath := buildSourcePlugin(t, `
 package main
