@@ -10,6 +10,7 @@ type Client interface {
 	Validate(context.Context, UnitRequest) error
 	Plan(context.Context, UnitRequest) (contract.Plan, error)
 	Run(context.Context, RunRequest, contract.RunEnv) error
+	Start(context.Context, StartRequest, contract.RunEnv) (contract.BackgroundTask, error)
 }
 
 type UnitRequest struct {
@@ -27,4 +28,8 @@ type RunRequest struct {
 	InputDefs       []contract.PortDef
 	InputSourceDefs map[string]contract.PortDef
 	Inputs          map[string]any
+}
+
+type StartRequest struct {
+	RunRequest
 }

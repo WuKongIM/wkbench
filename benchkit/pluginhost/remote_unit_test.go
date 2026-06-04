@@ -9,7 +9,7 @@ import (
 
 func TestRemoteUnitDelegatesValidatePlanAndRun(t *testing.T) {
 	client := &fakeClient{}
-	unit := NewRemoteUnit(client, Unit{
+	var unit contract.Unit = NewRemoteUnit(client, Unit{
 		PluginName: "demo",
 		Kind:       "demo.echo/v1",
 		Title:      "Echo",
@@ -48,9 +48,30 @@ func TestRemoteUnitDelegatesValidatePlanAndRun(t *testing.T) {
 	}
 }
 
+func TestNewRemoteUnitDoesNotImplementBackgroundWhenManifestDoesNotMarkIt(t *testing.T) {
+	unit := NewRemoteUnit(&fakeClient{}, Unit{
+		Kind: "test.normal/v1",
+	})
+
+	if _, ok := unit.(contract.BackgroundUnit); ok {
+		t.Fatalf("non-background remote unit implements BackgroundUnit")
+	}
+}
+
+func TestNewRemoteUnitImplementsBackgroundWhenManifestMarksIt(t *testing.T) {
+	unit := NewRemoteUnit(&fakeClient{}, Unit{
+		Kind:       "test.background/v1",
+		Background: true,
+	})
+
+	if _, ok := unit.(contract.BackgroundUnit); !ok {
+		t.Fatalf("background remote unit does not implement BackgroundUnit")
+	}
+}
+
 func TestRemoteUnitAliasExposesDefinitionKindButSendsOriginalKind(t *testing.T) {
 	client := &fakeClient{}
-	unit := NewRemoteUnitAlias(client, Unit{
+	var unit contract.Unit = NewRemoteUnitAlias(client, Unit{
 		PluginName: "wkbench.demo",
 		Kind:       "demo.echo/v1",
 		Title:      "Echo",
@@ -83,7 +104,7 @@ func TestRemoteUnitAliasExposesDefinitionKindButSendsOriginalKind(t *testing.T) 
 
 func TestRemoteUnitRunReturnsMissingRequiredInput(t *testing.T) {
 	client := &fakeClient{}
-	unit := NewRemoteUnit(client, Unit{
+	var unit contract.Unit = NewRemoteUnit(client, Unit{
 		PluginName: "demo",
 		Kind:       "demo.echo/v1",
 		Inputs: []contract.PortDef{{
@@ -103,7 +124,7 @@ func TestRemoteUnitRunReturnsMissingRequiredInput(t *testing.T) {
 
 func TestRemoteUnitRunIgnoresMissingOptionalInput(t *testing.T) {
 	client := &fakeClient{}
-	unit := NewRemoteUnit(client, Unit{
+	var unit contract.Unit = NewRemoteUnit(client, Unit{
 		PluginName: "demo",
 		Kind:       "demo.echo/v1",
 		Inputs: []contract.PortDef{{
@@ -137,7 +158,7 @@ func TestRemoteUnitRunPassesInputSourceDefsWhenEnvProvidesThem(t *testing.T) {
 			MaxPayloadBytes: 32,
 		},
 	}
-	unit := NewRemoteUnit(client, Unit{
+	var unit contract.Unit = NewRemoteUnit(client, Unit{
 		PluginName: "demo",
 		Kind:       "demo.echo/v1",
 		Inputs: []contract.PortDef{{
@@ -162,6 +183,43 @@ func TestRemoteUnitRunPassesInputSourceDefsWhenEnvProvidesThem(t *testing.T) {
 	}
 }
 
+func TestRemoteBackgroundUnitDelegatesStart(t *testing.T) {
+	client := &fakeClient{}
+	unit := NewRemoteUnit(client, Unit{
+		Kind:       "test.background_start/v1",
+		Background: true,
+		Inputs: []contract.PortDef{{
+			Name: "input",
+			Type: "test.input/v1",
+			Meta: contract.PortMeta{
+				Boundary:        contract.PortBoundaryData,
+				Transport:       contract.PortTransportInline,
+				Encodings:       []string{"json"},
+				MaxPayloadBytes: 1024,
+			},
+		}},
+	})
+	background, ok := unit.(contract.BackgroundUnit)
+	if !ok {
+		t.Fatalf("remote unit did not implement BackgroundUnit")
+	}
+	env := contract.NewTestRunEnv("run-1", "background", map[string]any{"input": map[string]any{"ok": true}}, nil)
+
+	task, err := background.Start(context.Background(), env)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if task == nil {
+		t.Fatalf("start task is nil")
+	}
+	if client.startReq.Kind != "test.background_start/v1" {
+		t.Fatalf("start kind = %q", client.startReq.Kind)
+	}
+	if _, ok := client.startReq.Inputs["input"]; !ok {
+		t.Fatalf("start inputs missing input")
+	}
+}
+
 type sourceMetadataEnv struct {
 	*contract.TestRunEnv
 	sources map[string]contract.PortDef
@@ -176,9 +234,11 @@ type fakeClient struct {
 	validateCalled bool
 	planCalled     bool
 	runCalled      bool
+	startCalled    bool
 	validateReq    UnitRequest
 	planReq        UnitRequest
 	runReq         RunRequest
+	startReq       StartRequest
 }
 
 func (f *fakeClient) Validate(ctx context.Context, req UnitRequest) error {
@@ -205,4 +265,19 @@ func (f *fakeClient) Run(ctx context.Context, req RunRequest, env contract.RunEn
 		return env.SetOutput("result", "not-string")
 	}
 	return env.SetOutput("result", message)
+}
+
+func (f *fakeClient) Start(ctx context.Context, req StartRequest, env contract.RunEnv) (contract.BackgroundTask, error) {
+	f.startCalled = true
+	f.startReq = req
+	return noopBackgroundTask{}, nil
+}
+
+type noopBackgroundTask struct{}
+
+func (noopBackgroundTask) Stop(context.Context) error { return nil }
+
+func (noopBackgroundTask) Done() <-chan error {
+	ch := make(chan error)
+	return ch
 }

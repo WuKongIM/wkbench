@@ -352,6 +352,10 @@ func (c *StdioClient) Run(ctx context.Context, req RunRequest, env contract.RunE
 	}
 }
 
+func (c *StdioClient) Start(ctx context.Context, req StartRequest, env contract.RunEnv) (contract.BackgroundTask, error) {
+	return nil, errors.New("stdio plugin background Start is not implemented")
+}
+
 func writeRunArtifactError(write func(*protocol.Frame) error, requestID, runID, unitName string, err error) error {
 	if writeErr := write(&protocol.Frame{
 		RequestId:      requestID,

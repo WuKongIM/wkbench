@@ -237,6 +237,10 @@ func (c pendingLifecycleClient) Run(ctx context.Context, req pluginhost.RunReque
 	return c.client.Run(ctx, req, env)
 }
 
+func (c pendingLifecycleClient) Start(ctx context.Context, req pluginhost.StartRequest, env contract.RunEnv) (contract.BackgroundTask, error) {
+	return c.client.Start(ctx, req, env)
+}
+
 func runListUnits(reg *registry.Registry, stderr io.Writer) int {
 	for _, def := range reg.Definitions() {
 		fmt.Fprintln(stderr, def.Kind)

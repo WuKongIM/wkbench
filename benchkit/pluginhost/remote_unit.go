@@ -8,18 +8,34 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
 
+type remoteRunnable interface {
+	contract.Unit
+}
+
 type RemoteUnit struct {
 	client    Client
 	unit      Unit
 	aliasKind string
 }
 
-func NewRemoteUnit(client Client, unit Unit) RemoteUnit {
-	return RemoteUnit{client: client, unit: unit}
+type remoteBackgroundUnit struct {
+	RemoteUnit
 }
 
-func NewRemoteUnitAlias(client Client, unit Unit, aliasKind string) RemoteUnit {
-	return RemoteUnit{client: client, unit: unit, aliasKind: aliasKind}
+func NewRemoteUnit(client Client, unit Unit) contract.Unit {
+	base := RemoteUnit{client: client, unit: unit}
+	if unit.Background {
+		return remoteBackgroundUnit{RemoteUnit: base}
+	}
+	return base
+}
+
+func NewRemoteUnitAlias(client Client, unit Unit, aliasKind string) contract.Unit {
+	base := RemoteUnit{client: client, unit: unit, aliasKind: aliasKind}
+	if unit.Background {
+		return remoteBackgroundUnit{RemoteUnit: base}
+	}
+	return base
 }
 
 func (u RemoteUnit) Definition() contract.Definition {
@@ -86,6 +102,35 @@ func (u RemoteUnit) Run(ctx context.Context, env contract.RunEnv) error {
 		InputSourceDefs: inputSourceDefs,
 		Inputs:          inputs,
 	}, env)
+}
+
+func (u remoteBackgroundUnit) Start(ctx context.Context, env contract.RunEnv) (contract.BackgroundTask, error) {
+	spec, err := encodeSpec(env)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := collectInputs(u.unit.Definition().Inputs, env)
+	if err != nil {
+		return nil, err
+	}
+	inputSourceDefs, err := collectInputSourceDefs(env, inputs)
+	if err != nil {
+		return nil, err
+	}
+	return u.client.Start(ctx, StartRequest{RunRequest: RunRequest{
+		UnitRequest: UnitRequest{
+			PluginName:        u.unit.PluginName,
+			UnitName:          env.UnitName(),
+			Kind:              u.unit.Kind,
+			RunID:             env.RunID(),
+			RunDurationMillis: env.RunDuration().Milliseconds(),
+			WorkerCount:       env.WorkerCount(),
+			SpecJSON:          spec,
+		},
+		InputDefs:       u.unit.Definition().Inputs,
+		InputSourceDefs: inputSourceDefs,
+		Inputs:          inputs,
+	}}, env)
 }
 
 func collectInputs(defs []contract.PortDef, env contract.RunEnv) (map[string]any, error) {
