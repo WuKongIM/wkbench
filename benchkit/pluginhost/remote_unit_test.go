@@ -220,6 +220,73 @@ func TestRemoteBackgroundUnitDelegatesStart(t *testing.T) {
 	}
 }
 
+func TestRemoteBackgroundUnitAliasExposesDefinitionKindButSendsOriginalKind(t *testing.T) {
+	client := &fakeClient{}
+	unit := NewRemoteUnitAlias(client, Unit{
+		PluginName: "wkbench.demo",
+		Kind:       "demo.background/v1",
+		Title:      "Background",
+		Background: true,
+	}, "wkbench.demo:demo.background/v1")
+	if got := unit.Definition().Kind; got != "wkbench.demo:demo.background/v1" {
+		t.Fatalf("Definition().Kind = %q", got)
+	}
+	background, ok := unit.(contract.BackgroundUnit)
+	if !ok {
+		t.Fatalf("remote unit did not implement BackgroundUnit")
+	}
+	env := contract.NewTestRunEnv("run-1", "background", nil, nil)
+
+	if _, err := background.Start(context.Background(), env); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got := client.startReq.Kind; got != "demo.background/v1" {
+		t.Fatalf("start request kind = %q", got)
+	}
+}
+
+func TestRemoteBackgroundUnitStartPassesInputSourceDefsWhenEnvProvidesThem(t *testing.T) {
+	client := &fakeClient{}
+	sourceDef := contract.PortDef{
+		Name: "result",
+		Type: "port.demo.message/v1",
+		Meta: contract.PortMeta{
+			Boundary:        contract.PortBoundaryData,
+			Transport:       contract.PortTransportInline,
+			Encodings:       []string{"json"},
+			MaxPayloadBytes: 32,
+		},
+	}
+	unit := NewRemoteUnit(client, Unit{
+		PluginName: "demo",
+		Kind:       "demo.background/v1",
+		Background: true,
+		Inputs: []contract.PortDef{{
+			Name: "message",
+			Type: "port.demo.message/v1",
+		}},
+	})
+	background, ok := unit.(contract.BackgroundUnit)
+	if !ok {
+		t.Fatalf("remote unit did not implement BackgroundUnit")
+	}
+	env := sourceMetadataEnv{
+		TestRunEnv: contract.NewTestRunEnv("run-1", "background", map[string]any{"message": "hi"}, nil),
+		sources:    map[string]contract.PortDef{"message": sourceDef},
+	}
+
+	if _, err := background.Start(context.Background(), env); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	got, ok := client.startReq.InputSourceDefs["message"]
+	if !ok {
+		t.Fatalf("source defs missing: %#v", client.startReq.InputSourceDefs)
+	}
+	if got.Name != "result" || got.Type != sourceDef.Type || got.Meta.MaxPayloadBytes != 32 {
+		t.Fatalf("source def = %#v", got)
+	}
+}
+
 type sourceMetadataEnv struct {
 	*contract.TestRunEnv
 	sources map[string]contract.PortDef

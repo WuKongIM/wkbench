@@ -8,10 +8,6 @@ import (
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 )
 
-type remoteRunnable interface {
-	contract.Unit
-}
-
 type RemoteUnit struct {
 	client    Client
 	unit      Unit
