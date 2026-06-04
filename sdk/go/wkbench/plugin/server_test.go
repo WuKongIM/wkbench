@@ -1225,6 +1225,73 @@ func TestServerBackgroundEventBeforeStopCanBeReadAfterStop(t *testing.T) {
 	_ = toHostWriter.Close()
 }
 
+func TestServerStopFlushesReadyDoneWhenMonitorHasNotRun(t *testing.T) {
+	unit := &serverBackgroundUnit{
+		done:            make(chan error, 1),
+		writeFinalState: true,
+	}
+	srv := newServer(Plugin{Name: "server-bg", Version: "dev", Units: []contract.Unit{unit}})
+	var out bytes.Buffer
+	writer := protocol.NewFrameWriter(&out)
+	runReq := &protocol.RunRequest{
+		UnitName: "bg",
+		Kind:     "test.server_background/v1",
+		RunId:    "run-1",
+		SpecJson: []byte(`{}`),
+	}
+	env := newRemoteRunEnv("start-1", runReq, nil, map[string]any{}, unit.Definition().Artifacts, nil, func(frame *protocol.Frame) error {
+		return srv.writeFrame(writer, frame)
+	})
+	unit.env = env
+	task := serverBackgroundTask{unit: unit}
+	record := srv.storeBackgroundTask("start-1", "run-1", "bg", unit, env, task)
+	unit.done <- fmt.Errorf("collector failed")
+
+	stopFrame := &protocol.Frame{
+		RequestId: "stop-1",
+		Body:      &protocol.Frame_StopRequest{StopRequest: &protocol.StopRequest{TaskId: record.id}},
+	}
+	if err := srv.handleStop(context.Background(), stopFrame, stopFrame.GetStopRequest(), writer); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+
+	var sawEvent, sawOutput, sawMetric, sawStop bool
+	for out.Len() > 0 {
+		frame := readServerTestFrame(t, &out)
+		switch {
+		case frame.GetBackgroundEvent() != nil:
+			event := frame.GetBackgroundEvent()
+			if event.GetTaskId() != record.id || event.GetEvent() != "fatal_error" {
+				t.Fatalf("background event = %#v", event)
+			}
+			if event.GetError() == nil || event.GetError().GetMessage() != "collector failed" {
+				t.Fatalf("background event error = %#v", event.GetError())
+			}
+			sawEvent = true
+		case frame.GetSetOutput() != nil:
+			if frame.GetRequestId() != "start-1" {
+				t.Fatalf("output request id = %q, want start-1", frame.GetRequestId())
+			}
+			sawOutput = true
+		case frame.GetMetricFlush() != nil:
+			if frame.GetRequestId() != "start-1" {
+				t.Fatalf("metric request id = %q, want start-1", frame.GetRequestId())
+			}
+			sawMetric = true
+		case frame.GetStopResponse() != nil:
+			if frame.GetRequestId() != "stop-1" {
+				t.Fatalf("stop response request id = %q, want stop-1", frame.GetRequestId())
+			}
+			sawStop = true
+		default:
+			t.Fatalf("unexpected frame = %#v", frame)
+		}
+	}
+	if !sawEvent || !sawOutput || !sawMetric || !sawStop {
+		t.Fatalf("frames saw event=%v output=%v metric=%v stop=%v", sawEvent, sawOutput, sawMetric, sawStop)
+	}
+}
+
 func testServerStopAfterBackgroundEventFlushesFinalState(t *testing.T, doneErr error, wantEvent string) {
 	t.Helper()
 	unit := &serverBackgroundUnit{

@@ -32,14 +32,20 @@ type server struct {
 }
 
 type backgroundTaskRecord struct {
-	id        string
-	requestID string
-	runID     string
-	unitName  string
-	unit      contract.Unit
-	env       *remoteRunEnv
-	task      contract.BackgroundTask
-	stopping  bool
+	id             string
+	requestID      string
+	runID          string
+	unitName       string
+	unit           contract.Unit
+	env            *remoteRunEnv
+	task           contract.BackgroundTask
+	done           <-chan error
+	stopMonitor    chan struct{}
+	doneObserved   bool
+	doneErr        error
+	eventSent      bool
+	monitorStopped bool
+	stopping       bool
 }
 
 func newServer(plugin Plugin) *server {
@@ -256,7 +262,7 @@ func (s *server) handleStart(ctx context.Context, frame *protocol.Frame, req *pr
 	}); err != nil {
 		return err
 	}
-	go s.monitorBackgroundTask(record.id, task, writer)
+	go s.monitorBackgroundTask(record, writer)
 	return nil
 }
 
@@ -286,6 +292,7 @@ func (s *server) handleStop(ctx context.Context, frame *protocol.Frame, req *pro
 		s.abortBackgroundTaskStop(record.id, record)
 		return err
 	}
+	s.flushReadyBackgroundEvent(record, writer)
 	s.completeBackgroundTaskStop(record.id, record)
 	return nil
 }
@@ -296,13 +303,15 @@ func (s *server) storeBackgroundTask(requestID, runID, unitName string, unit con
 	s.nextTask++
 	id := fmt.Sprintf("bg-%d", s.nextTask)
 	record := &backgroundTaskRecord{
-		id:        id,
-		requestID: requestID,
-		runID:     runID,
-		unitName:  unitName,
-		unit:      unit,
-		env:       env,
-		task:      task,
+		id:          id,
+		requestID:   requestID,
+		runID:       runID,
+		unitName:    unitName,
+		unit:        unit,
+		env:         env,
+		task:        task,
+		done:        task.Done(),
+		stopMonitor: make(chan struct{}),
 	}
 	s.tasks[id] = record
 	return record
@@ -332,18 +341,62 @@ func (s *server) completeBackgroundTaskStop(taskID string, record *backgroundTas
 	defer s.taskMu.Unlock()
 	if s.tasks[taskID] == record {
 		delete(s.tasks, taskID)
+		if !record.monitorStopped {
+			record.monitorStopped = true
+			close(record.stopMonitor)
+		}
 	}
 }
 
-func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTask, writer *protocol.FrameWriter) {
-	err, ok := <-task.Done()
-	if !ok {
-		err = nil
+func (s *server) monitorBackgroundTask(record *backgroundTaskRecord, writer *protocol.FrameWriter) {
+	select {
+	case err, ok := <-record.done:
+		if !ok {
+			err = nil
+		}
+		s.observeBackgroundDone(record, err)
+		s.emitObservedBackgroundEvent(record, writer)
+	case <-record.stopMonitor:
+		return
 	}
+}
+
+func (s *server) flushReadyBackgroundEvent(record *backgroundTaskRecord, writer *protocol.FrameWriter) {
+	select {
+	case err, ok := <-record.done:
+		if !ok {
+			err = nil
+		}
+		s.observeBackgroundDone(record, err)
+	default:
+	}
+	s.emitObservedBackgroundEvent(record, writer)
+}
+
+func (s *server) observeBackgroundDone(record *backgroundTaskRecord, err error) {
 	s.taskMu.Lock()
-	record, active := s.tasks[taskID]
+	defer s.taskMu.Unlock()
+	if s.tasks[record.id] != record || record.doneObserved {
+		return
+	}
+	record.doneObserved = true
+	record.doneErr = err
+}
+
+func (s *server) emitObservedBackgroundEvent(record *backgroundTaskRecord, writer *protocol.FrameWriter) {
+	s.taskMu.Lock()
+	active := s.tasks[record.id] == record
+	shouldEmit := active && record.doneObserved && !record.eventSent
+	err := record.doneErr
+	requestID := record.requestID
+	runID := record.runID
+	unitName := record.unitName
+	taskID := record.id
+	if shouldEmit {
+		record.eventSent = true
+	}
 	s.taskMu.Unlock()
-	if !active {
+	if !shouldEmit {
 		return
 	}
 	event := "completed"
@@ -353,9 +406,9 @@ func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTa
 		rpcErr = &protocol.Error{Code: "BACKGROUND_ERROR", Message: err.Error()}
 	}
 	_ = s.writeFrame(writer, &protocol.Frame{
-		RequestId:      record.requestID,
-		RunId:          record.runID,
-		UnitInstanceId: record.unitName,
+		RequestId:      requestID,
+		RunId:          runID,
+		UnitInstanceId: unitName,
 		Body: &protocol.Frame_BackgroundEvent{BackgroundEvent: &protocol.BackgroundEvent{
 			TaskId: taskID,
 			Event:  event,
