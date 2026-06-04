@@ -342,12 +342,8 @@ func (s *server) monitorBackgroundTask(taskID string, task contract.BackgroundTa
 	}
 	s.taskMu.Lock()
 	record, active := s.tasks[taskID]
-	stopping := false
-	if active {
-		stopping = record.stopping
-	}
 	s.taskMu.Unlock()
-	if !active || stopping {
+	if !active {
 		return
 	}
 	event := "completed"
