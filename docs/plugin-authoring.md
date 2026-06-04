@@ -219,6 +219,8 @@ Plugin units receive the same lifecycle calls as local units:
 - `Plan` should be deterministic and return the work plan for the unit.
 - `Run` may read inputs, emit metrics, set outputs, and write report-friendly
   values.
+- Background units may implement `Start` and `Stop`; remote background tasks can
+  publish final outputs, metrics, and host-managed artifacts during shutdown.
 
 Inputs and outputs are JSON inline values in Phase 1. Keep large raw samples out
 of inline outputs; write compact summaries instead.
@@ -243,8 +245,8 @@ remote metrics.
 ## Phase 1 Limits
 
 - Plugin transport is `wkbench.plugin/v1` over stdio only.
-- `Validate`, `Plan`, and `Run` are supported; background lifecycle and richer
-  streaming APIs are outside this first plugin path.
+- `Validate`, `Plan`, `Run`, and background `Start`/`Stop` are supported; richer
+  streaming APIs are outside this plugin path.
 - Inputs crossing the process boundary must be wired from non-sensitive inline
   JSON data outputs into non-sensitive inline JSON data inputs. Paged,
   artifact-ref, stream, and local-resource inputs or producer outputs are not
