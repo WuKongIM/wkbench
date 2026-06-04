@@ -24,6 +24,7 @@ type Unit struct {
 	Outputs     []contract.PortDef
 	Metrics     []contract.MetricDef
 	Artifacts   []contract.ArtifactDef
+	Background  bool
 }
 
 func (u Unit) Definition() contract.Definition {

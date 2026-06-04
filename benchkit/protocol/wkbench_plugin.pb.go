@@ -48,6 +48,11 @@ type Frame struct {
 	//	*Frame_ArtifactChunk
 	//	*Frame_ArtifactClose
 	//	*Frame_ArtifactClosed
+	//	*Frame_StartRequest
+	//	*Frame_StartResponse
+	//	*Frame_StopRequest
+	//	*Frame_StopResponse
+	//	*Frame_BackgroundEvent
 	Body          isFrame_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -291,6 +296,51 @@ func (x *Frame) GetArtifactClosed() *ArtifactClosed {
 	return nil
 }
 
+func (x *Frame) GetStartRequest() *StartRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_StartRequest); ok {
+			return x.StartRequest
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetStartResponse() *StartResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_StartResponse); ok {
+			return x.StartResponse
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetStopRequest() *StopRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_StopRequest); ok {
+			return x.StopRequest
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetStopResponse() *StopResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_StopResponse); ok {
+			return x.StopResponse
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetBackgroundEvent() *BackgroundEvent {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_BackgroundEvent); ok {
+			return x.BackgroundEvent
+		}
+	}
+	return nil
+}
+
 type isFrame_Body interface {
 	isFrame_Body()
 }
@@ -375,6 +425,26 @@ type Frame_ArtifactClosed struct {
 	ArtifactClosed *ArtifactClosed `protobuf:"bytes,29,opt,name=artifact_closed,json=artifactClosed,proto3,oneof"`
 }
 
+type Frame_StartRequest struct {
+	StartRequest *StartRequest `protobuf:"bytes,30,opt,name=start_request,json=startRequest,proto3,oneof"`
+}
+
+type Frame_StartResponse struct {
+	StartResponse *StartResponse `protobuf:"bytes,31,opt,name=start_response,json=startResponse,proto3,oneof"`
+}
+
+type Frame_StopRequest struct {
+	StopRequest *StopRequest `protobuf:"bytes,32,opt,name=stop_request,json=stopRequest,proto3,oneof"`
+}
+
+type Frame_StopResponse struct {
+	StopResponse *StopResponse `protobuf:"bytes,33,opt,name=stop_response,json=stopResponse,proto3,oneof"`
+}
+
+type Frame_BackgroundEvent struct {
+	BackgroundEvent *BackgroundEvent `protobuf:"bytes,34,opt,name=background_event,json=backgroundEvent,proto3,oneof"`
+}
+
 func (*Frame_HandshakeRequest) isFrame_Body() {}
 
 func (*Frame_HandshakeResponse) isFrame_Body() {}
@@ -414,6 +484,16 @@ func (*Frame_ArtifactChunk) isFrame_Body() {}
 func (*Frame_ArtifactClose) isFrame_Body() {}
 
 func (*Frame_ArtifactClosed) isFrame_Body() {}
+
+func (*Frame_StartRequest) isFrame_Body() {}
+
+func (*Frame_StartResponse) isFrame_Body() {}
+
+func (*Frame_StopRequest) isFrame_Body() {}
+
+func (*Frame_StopResponse) isFrame_Body() {}
+
+func (*Frame_BackgroundEvent) isFrame_Body() {}
 
 type HandshakeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -700,6 +780,7 @@ type UnitDefinition struct {
 	Outputs       []*PortDef             `protobuf:"bytes,5,rep,name=outputs,proto3" json:"outputs,omitempty"`
 	Metrics       []*MetricDef           `protobuf:"bytes,6,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	Artifacts     []*ArtifactDef         `protobuf:"bytes,7,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
+	Background    bool                   `protobuf:"varint,8,opt,name=background,proto3" json:"background,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -781,6 +862,13 @@ func (x *UnitDefinition) GetArtifacts() []*ArtifactDef {
 		return x.Artifacts
 	}
 	return nil
+}
+
+func (x *UnitDefinition) GetBackground() bool {
+	if x != nil {
+		return x.Background
+	}
+	return false
 }
 
 type PortDef struct {
@@ -1371,6 +1459,282 @@ func (x *RunRequest) GetInputs() map[string]*PortValue {
 	return nil
 }
 
+type StartRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	UnitName          string                 `protobuf:"bytes,1,opt,name=unit_name,json=unitName,proto3" json:"unit_name,omitempty"`
+	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	RunId             string                 `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunDurationMillis int64                  `protobuf:"varint,4,opt,name=run_duration_millis,json=runDurationMillis,proto3" json:"run_duration_millis,omitempty"`
+	WorkerCount       int32                  `protobuf:"varint,5,opt,name=worker_count,json=workerCount,proto3" json:"worker_count,omitempty"`
+	SpecJson          []byte                 `protobuf:"bytes,6,opt,name=spec_json,json=specJson,proto3" json:"spec_json,omitempty"`
+	Inputs            map[string]*PortValue  `protobuf:"bytes,7,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *StartRequest) Reset() {
+	*x = StartRequest{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartRequest) ProtoMessage() {}
+
+func (x *StartRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartRequest.ProtoReflect.Descriptor instead.
+func (*StartRequest) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *StartRequest) GetUnitName() string {
+	if x != nil {
+		return x.UnitName
+	}
+	return ""
+}
+
+func (x *StartRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *StartRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *StartRequest) GetRunDurationMillis() int64 {
+	if x != nil {
+		return x.RunDurationMillis
+	}
+	return 0
+}
+
+func (x *StartRequest) GetWorkerCount() int32 {
+	if x != nil {
+		return x.WorkerCount
+	}
+	return 0
+}
+
+func (x *StartRequest) GetSpecJson() []byte {
+	if x != nil {
+		return x.SpecJson
+	}
+	return nil
+}
+
+func (x *StartRequest) GetInputs() map[string]*PortValue {
+	if x != nil {
+		return x.Inputs
+	}
+	return nil
+}
+
+type StartResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartResponse) Reset() {
+	*x = StartResponse{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartResponse) ProtoMessage() {}
+
+func (x *StartResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartResponse.ProtoReflect.Descriptor instead.
+func (*StartResponse) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *StartResponse) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+type StopRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopRequest) Reset() {
+	*x = StopRequest{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopRequest) ProtoMessage() {}
+
+func (x *StopRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopRequest.ProtoReflect.Descriptor instead.
+func (*StopRequest) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *StopRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+type StopResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopResponse) Reset() {
+	*x = StopResponse{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopResponse) ProtoMessage() {}
+
+func (x *StopResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopResponse.ProtoReflect.Descriptor instead.
+func (*StopResponse) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{19}
+}
+
+type BackgroundEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Event         string                 `protobuf:"bytes,2,opt,name=event,proto3" json:"event,omitempty"`
+	Error         *Error                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackgroundEvent) Reset() {
+	*x = BackgroundEvent{}
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackgroundEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackgroundEvent) ProtoMessage() {}
+
+func (x *BackgroundEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackgroundEvent.ProtoReflect.Descriptor instead.
+func (*BackgroundEvent) Descriptor() ([]byte, []int) {
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *BackgroundEvent) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *BackgroundEvent) GetEvent() string {
+	if x != nil {
+		return x.Event
+	}
+	return ""
+}
+
+func (x *BackgroundEvent) GetError() *Error {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
 type RunEnvRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Op            string                 `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
@@ -1382,7 +1746,7 @@ type RunEnvRequest struct {
 
 func (x *RunEnvRequest) Reset() {
 	*x = RunEnvRequest{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[16]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1394,7 +1758,7 @@ func (x *RunEnvRequest) String() string {
 func (*RunEnvRequest) ProtoMessage() {}
 
 func (x *RunEnvRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[16]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1407,7 +1771,7 @@ func (x *RunEnvRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunEnvRequest.ProtoReflect.Descriptor instead.
 func (*RunEnvRequest) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{16}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RunEnvRequest) GetOp() string {
@@ -1442,7 +1806,7 @@ type RunEnvResponse struct {
 
 func (x *RunEnvResponse) Reset() {
 	*x = RunEnvResponse{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[17]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1454,7 +1818,7 @@ func (x *RunEnvResponse) String() string {
 func (*RunEnvResponse) ProtoMessage() {}
 
 func (x *RunEnvResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[17]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1467,7 +1831,7 @@ func (x *RunEnvResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunEnvResponse.ProtoReflect.Descriptor instead.
 func (*RunEnvResponse) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{17}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RunEnvResponse) GetOp() string {
@@ -1506,7 +1870,7 @@ type PortValue struct {
 
 func (x *PortValue) Reset() {
 	*x = PortValue{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[18]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1518,7 +1882,7 @@ func (x *PortValue) String() string {
 func (*PortValue) ProtoMessage() {}
 
 func (x *PortValue) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[18]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1531,7 +1895,7 @@ func (x *PortValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PortValue.ProtoReflect.Descriptor instead.
 func (*PortValue) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{18}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PortValue) GetType() string {
@@ -1592,7 +1956,7 @@ type MetricFlush struct {
 
 func (x *MetricFlush) Reset() {
 	*x = MetricFlush{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[19]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1604,7 +1968,7 @@ func (x *MetricFlush) String() string {
 func (*MetricFlush) ProtoMessage() {}
 
 func (x *MetricFlush) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[19]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1617,7 +1981,7 @@ func (x *MetricFlush) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricFlush.ProtoReflect.Descriptor instead.
 func (*MetricFlush) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{19}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *MetricFlush) GetMetrics() []*MetricSnapshot {
@@ -1642,7 +2006,7 @@ type MetricSnapshot struct {
 
 func (x *MetricSnapshot) Reset() {
 	*x = MetricSnapshot{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[20]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1654,7 +2018,7 @@ func (x *MetricSnapshot) String() string {
 func (*MetricSnapshot) ProtoMessage() {}
 
 func (x *MetricSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[20]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1667,7 +2031,7 @@ func (x *MetricSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricSnapshot.ProtoReflect.Descriptor instead.
 func (*MetricSnapshot) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{20}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *MetricSnapshot) GetName() string {
@@ -1729,7 +2093,7 @@ type SetOutput struct {
 
 func (x *SetOutput) Reset() {
 	*x = SetOutput{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[21]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1741,7 +2105,7 @@ func (x *SetOutput) String() string {
 func (*SetOutput) ProtoMessage() {}
 
 func (x *SetOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[21]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1754,7 +2118,7 @@ func (x *SetOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetOutput.ProtoReflect.Descriptor instead.
 func (*SetOutput) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{21}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *SetOutput) GetName() string {
@@ -1780,7 +2144,7 @@ type ArtifactOpen struct {
 
 func (x *ArtifactOpen) Reset() {
 	*x = ArtifactOpen{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1792,7 +2156,7 @@ func (x *ArtifactOpen) String() string {
 func (*ArtifactOpen) ProtoMessage() {}
 
 func (x *ArtifactOpen) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[22]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1805,7 +2169,7 @@ func (x *ArtifactOpen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactOpen.ProtoReflect.Descriptor instead.
 func (*ArtifactOpen) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{22}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ArtifactOpen) GetName() string {
@@ -1825,7 +2189,7 @@ type ArtifactOpened struct {
 
 func (x *ArtifactOpened) Reset() {
 	*x = ArtifactOpened{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1837,7 +2201,7 @@ func (x *ArtifactOpened) String() string {
 func (*ArtifactOpened) ProtoMessage() {}
 
 func (x *ArtifactOpened) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[23]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1850,7 +2214,7 @@ func (x *ArtifactOpened) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactOpened.ProtoReflect.Descriptor instead.
 func (*ArtifactOpened) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{23}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ArtifactOpened) GetName() string {
@@ -1878,7 +2242,7 @@ type ArtifactChunk struct {
 
 func (x *ArtifactChunk) Reset() {
 	*x = ArtifactChunk{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +2254,7 @@ func (x *ArtifactChunk) String() string {
 func (*ArtifactChunk) ProtoMessage() {}
 
 func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[24]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +2267,7 @@ func (x *ArtifactChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactChunk.ProtoReflect.Descriptor instead.
 func (*ArtifactChunk) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{24}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ArtifactChunk) GetHandle() string {
@@ -1936,7 +2300,7 @@ type ArtifactClose struct {
 
 func (x *ArtifactClose) Reset() {
 	*x = ArtifactClose{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1948,7 +2312,7 @@ func (x *ArtifactClose) String() string {
 func (*ArtifactClose) ProtoMessage() {}
 
 func (x *ArtifactClose) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[25]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1961,7 +2325,7 @@ func (x *ArtifactClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactClose.ProtoReflect.Descriptor instead.
 func (*ArtifactClose) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{25}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ArtifactClose) GetHandle() string {
@@ -1981,7 +2345,7 @@ type ArtifactClosed struct {
 
 func (x *ArtifactClosed) Reset() {
 	*x = ArtifactClosed{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1993,7 +2357,7 @@ func (x *ArtifactClosed) String() string {
 func (*ArtifactClosed) ProtoMessage() {}
 
 func (x *ArtifactClosed) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[26]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2006,7 +2370,7 @@ func (x *ArtifactClosed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactClosed.ProtoReflect.Descriptor instead.
 func (*ArtifactClosed) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{26}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ArtifactClosed) GetHandle() string {
@@ -2033,7 +2397,7 @@ type TerminalStatus struct {
 
 func (x *TerminalStatus) Reset() {
 	*x = TerminalStatus{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2045,7 +2409,7 @@ func (x *TerminalStatus) String() string {
 func (*TerminalStatus) ProtoMessage() {}
 
 func (x *TerminalStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[27]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2058,7 +2422,7 @@ func (x *TerminalStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalStatus.ProtoReflect.Descriptor instead.
 func (*TerminalStatus) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{27}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *TerminalStatus) GetOk() bool {
@@ -2085,7 +2449,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2097,7 +2461,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[28]
+	mi := &file_benchkit_protocol_wkbench_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2110,7 +2474,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{28}
+	return file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Error) GetCode() string {
@@ -2131,7 +2495,7 @@ var File_benchkit_protocol_wkbench_plugin_proto protoreflect.FileDescriptor
 
 const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\n" +
-	"&benchkit/protocol/wkbench_plugin.proto\x12\x11wkbench.plugin.v1\"\xd4\f\n" +
+	"&benchkit/protocol/wkbench_plugin.proto\x12\x11wkbench.plugin.v1\"\xc5\x0f\n" +
 	"\x05Frame\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x15\n" +
@@ -2159,7 +2523,12 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x0fartifact_opened\x18\x1a \x01(\v2!.wkbench.plugin.v1.ArtifactOpenedH\x00R\x0eartifactOpened\x12I\n" +
 	"\x0eartifact_chunk\x18\x1b \x01(\v2 .wkbench.plugin.v1.ArtifactChunkH\x00R\rartifactChunk\x12I\n" +
 	"\x0eartifact_close\x18\x1c \x01(\v2 .wkbench.plugin.v1.ArtifactCloseH\x00R\rartifactClose\x12L\n" +
-	"\x0fartifact_closed\x18\x1d \x01(\v2!.wkbench.plugin.v1.ArtifactClosedH\x00R\x0eartifactClosedB\x06\n" +
+	"\x0fartifact_closed\x18\x1d \x01(\v2!.wkbench.plugin.v1.ArtifactClosedH\x00R\x0eartifactClosed\x12F\n" +
+	"\rstart_request\x18\x1e \x01(\v2\x1f.wkbench.plugin.v1.StartRequestH\x00R\fstartRequest\x12I\n" +
+	"\x0estart_response\x18\x1f \x01(\v2 .wkbench.plugin.v1.StartResponseH\x00R\rstartResponse\x12C\n" +
+	"\fstop_request\x18  \x01(\v2\x1e.wkbench.plugin.v1.StopRequestH\x00R\vstopRequest\x12F\n" +
+	"\rstop_response\x18! \x01(\v2\x1f.wkbench.plugin.v1.StopResponseH\x00R\fstopResponse\x12O\n" +
+	"\x10background_event\x18\" \x01(\v2\".wkbench.plugin.v1.BackgroundEventH\x00R\x0fbackgroundEventB\x06\n" +
 	"\x04body\"}\n" +
 	"\x10HandshakeRequest\x12#\n" +
 	"\rhost_protocol\x18\x01 \x01(\tR\fhostProtocol\x12!\n" +
@@ -2177,7 +2546,7 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x05units\x18\x06 \x03(\v2!.wkbench.plugin.v1.UnitDefinitionR\x05units\"\x12\n" +
 	"\x10ListUnitsRequest\"L\n" +
 	"\x11ListUnitsResponse\x127\n" +
-	"\x05units\x18\x01 \x03(\v2!.wkbench.plugin.v1.UnitDefinitionR\x05units\"\xbc\x02\n" +
+	"\x05units\x18\x01 \x03(\v2!.wkbench.plugin.v1.UnitDefinitionR\x05units\"\xdc\x02\n" +
 	"\x0eUnitDefinition\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -2185,7 +2554,10 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x06inputs\x18\x04 \x03(\v2\x1a.wkbench.plugin.v1.PortDefR\x06inputs\x124\n" +
 	"\aoutputs\x18\x05 \x03(\v2\x1a.wkbench.plugin.v1.PortDefR\aoutputs\x126\n" +
 	"\ametrics\x18\x06 \x03(\v2\x1c.wkbench.plugin.v1.MetricDefR\ametrics\x12<\n" +
-	"\tartifacts\x18\a \x03(\v2\x1e.wkbench.plugin.v1.ArtifactDefR\tartifacts\"~\n" +
+	"\tartifacts\x18\a \x03(\v2\x1e.wkbench.plugin.v1.ArtifactDefR\tartifacts\x12\x1e\n" +
+	"\n" +
+	"background\x18\b \x01(\bR\n" +
+	"background\"~\n" +
 	"\aPortDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
@@ -2235,7 +2607,27 @@ const file_benchkit_protocol_wkbench_plugin_proto_rawDesc = "" +
 	"\x06inputs\x18\a \x03(\v2).wkbench.plugin.v1.RunRequest.InputsEntryR\x06inputs\x1aW\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
-	"\x05value\x18\x02 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value:\x028\x01\"g\n" +
+	"\x05value\x18\x02 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value:\x028\x01\"\xe4\x02\n" +
+	"\fStartRequest\x12\x1b\n" +
+	"\tunit_name\x18\x01 \x01(\tR\bunitName\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x15\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12.\n" +
+	"\x13run_duration_millis\x18\x04 \x01(\x03R\x11runDurationMillis\x12!\n" +
+	"\fworker_count\x18\x05 \x01(\x05R\vworkerCount\x12\x1b\n" +
+	"\tspec_json\x18\x06 \x01(\fR\bspecJson\x12C\n" +
+	"\x06inputs\x18\a \x03(\v2+.wkbench.plugin.v1.StartRequest.InputsEntryR\x06inputs\x1aW\n" +
+	"\vInputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
+	"\x05value\x18\x02 \x01(\v2\x1c.wkbench.plugin.v1.PortValueR\x05value:\x028\x01\"(\n" +
+	"\rStartResponse\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\"&\n" +
+	"\vStopRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\"\x0e\n" +
+	"\fStopResponse\"p\n" +
+	"\x0fBackgroundEvent\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x14\n" +
+	"\x05event\x18\x02 \x01(\tR\x05event\x12.\n" +
+	"\x05error\x18\x03 \x01(\v2\x18.wkbench.plugin.v1.ErrorR\x05error\"g\n" +
 	"\rRunEnvRequest\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x122\n" +
@@ -2304,7 +2696,7 @@ func file_benchkit_protocol_wkbench_plugin_proto_rawDescGZIP() []byte {
 	return file_benchkit_protocol_wkbench_plugin_proto_rawDescData
 }
 
-var file_benchkit_protocol_wkbench_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_benchkit_protocol_wkbench_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_benchkit_protocol_wkbench_plugin_proto_goTypes = []any{
 	(*Frame)(nil),             // 0: wkbench.plugin.v1.Frame
 	(*HandshakeRequest)(nil),  // 1: wkbench.plugin.v1.HandshakeRequest
@@ -2322,21 +2714,27 @@ var file_benchkit_protocol_wkbench_plugin_proto_goTypes = []any{
 	(*PlanRequest)(nil),       // 13: wkbench.plugin.v1.PlanRequest
 	(*PlanResponse)(nil),      // 14: wkbench.plugin.v1.PlanResponse
 	(*RunRequest)(nil),        // 15: wkbench.plugin.v1.RunRequest
-	(*RunEnvRequest)(nil),     // 16: wkbench.plugin.v1.RunEnvRequest
-	(*RunEnvResponse)(nil),    // 17: wkbench.plugin.v1.RunEnvResponse
-	(*PortValue)(nil),         // 18: wkbench.plugin.v1.PortValue
-	(*MetricFlush)(nil),       // 19: wkbench.plugin.v1.MetricFlush
-	(*MetricSnapshot)(nil),    // 20: wkbench.plugin.v1.MetricSnapshot
-	(*SetOutput)(nil),         // 21: wkbench.plugin.v1.SetOutput
-	(*ArtifactOpen)(nil),      // 22: wkbench.plugin.v1.ArtifactOpen
-	(*ArtifactOpened)(nil),    // 23: wkbench.plugin.v1.ArtifactOpened
-	(*ArtifactChunk)(nil),     // 24: wkbench.plugin.v1.ArtifactChunk
-	(*ArtifactClose)(nil),     // 25: wkbench.plugin.v1.ArtifactClose
-	(*ArtifactClosed)(nil),    // 26: wkbench.plugin.v1.ArtifactClosed
-	(*TerminalStatus)(nil),    // 27: wkbench.plugin.v1.TerminalStatus
-	(*Error)(nil),             // 28: wkbench.plugin.v1.Error
-	nil,                       // 29: wkbench.plugin.v1.RunRequest.InputsEntry
-	nil,                       // 30: wkbench.plugin.v1.MetricSnapshot.LabelsEntry
+	(*StartRequest)(nil),      // 16: wkbench.plugin.v1.StartRequest
+	(*StartResponse)(nil),     // 17: wkbench.plugin.v1.StartResponse
+	(*StopRequest)(nil),       // 18: wkbench.plugin.v1.StopRequest
+	(*StopResponse)(nil),      // 19: wkbench.plugin.v1.StopResponse
+	(*BackgroundEvent)(nil),   // 20: wkbench.plugin.v1.BackgroundEvent
+	(*RunEnvRequest)(nil),     // 21: wkbench.plugin.v1.RunEnvRequest
+	(*RunEnvResponse)(nil),    // 22: wkbench.plugin.v1.RunEnvResponse
+	(*PortValue)(nil),         // 23: wkbench.plugin.v1.PortValue
+	(*MetricFlush)(nil),       // 24: wkbench.plugin.v1.MetricFlush
+	(*MetricSnapshot)(nil),    // 25: wkbench.plugin.v1.MetricSnapshot
+	(*SetOutput)(nil),         // 26: wkbench.plugin.v1.SetOutput
+	(*ArtifactOpen)(nil),      // 27: wkbench.plugin.v1.ArtifactOpen
+	(*ArtifactOpened)(nil),    // 28: wkbench.plugin.v1.ArtifactOpened
+	(*ArtifactChunk)(nil),     // 29: wkbench.plugin.v1.ArtifactChunk
+	(*ArtifactClose)(nil),     // 30: wkbench.plugin.v1.ArtifactClose
+	(*ArtifactClosed)(nil),    // 31: wkbench.plugin.v1.ArtifactClosed
+	(*TerminalStatus)(nil),    // 32: wkbench.plugin.v1.TerminalStatus
+	(*Error)(nil),             // 33: wkbench.plugin.v1.Error
+	nil,                       // 34: wkbench.plugin.v1.RunRequest.InputsEntry
+	nil,                       // 35: wkbench.plugin.v1.StartRequest.InputsEntry
+	nil,                       // 36: wkbench.plugin.v1.MetricSnapshot.LabelsEntry
 }
 var file_benchkit_protocol_wkbench_plugin_proto_depIdxs = []int32{
 	1,  // 0: wkbench.plugin.v1.Frame.handshake_request:type_name -> wkbench.plugin.v1.HandshakeRequest
@@ -2348,38 +2746,46 @@ var file_benchkit_protocol_wkbench_plugin_proto_depIdxs = []int32{
 	13, // 6: wkbench.plugin.v1.Frame.plan_request:type_name -> wkbench.plugin.v1.PlanRequest
 	14, // 7: wkbench.plugin.v1.Frame.plan_response:type_name -> wkbench.plugin.v1.PlanResponse
 	15, // 8: wkbench.plugin.v1.Frame.run_request:type_name -> wkbench.plugin.v1.RunRequest
-	16, // 9: wkbench.plugin.v1.Frame.run_env_request:type_name -> wkbench.plugin.v1.RunEnvRequest
-	17, // 10: wkbench.plugin.v1.Frame.run_env_response:type_name -> wkbench.plugin.v1.RunEnvResponse
-	19, // 11: wkbench.plugin.v1.Frame.metric_flush:type_name -> wkbench.plugin.v1.MetricFlush
-	21, // 12: wkbench.plugin.v1.Frame.set_output:type_name -> wkbench.plugin.v1.SetOutput
-	27, // 13: wkbench.plugin.v1.Frame.terminal_status:type_name -> wkbench.plugin.v1.TerminalStatus
-	28, // 14: wkbench.plugin.v1.Frame.error:type_name -> wkbench.plugin.v1.Error
-	22, // 15: wkbench.plugin.v1.Frame.artifact_open:type_name -> wkbench.plugin.v1.ArtifactOpen
-	23, // 16: wkbench.plugin.v1.Frame.artifact_opened:type_name -> wkbench.plugin.v1.ArtifactOpened
-	24, // 17: wkbench.plugin.v1.Frame.artifact_chunk:type_name -> wkbench.plugin.v1.ArtifactChunk
-	25, // 18: wkbench.plugin.v1.Frame.artifact_close:type_name -> wkbench.plugin.v1.ArtifactClose
-	26, // 19: wkbench.plugin.v1.Frame.artifact_closed:type_name -> wkbench.plugin.v1.ArtifactClosed
-	3,  // 20: wkbench.plugin.v1.HandshakeResponse.manifest:type_name -> wkbench.plugin.v1.PluginManifest
-	6,  // 21: wkbench.plugin.v1.PluginManifest.units:type_name -> wkbench.plugin.v1.UnitDefinition
-	6,  // 22: wkbench.plugin.v1.ListUnitsResponse.units:type_name -> wkbench.plugin.v1.UnitDefinition
-	7,  // 23: wkbench.plugin.v1.UnitDefinition.inputs:type_name -> wkbench.plugin.v1.PortDef
-	7,  // 24: wkbench.plugin.v1.UnitDefinition.outputs:type_name -> wkbench.plugin.v1.PortDef
-	9,  // 25: wkbench.plugin.v1.UnitDefinition.metrics:type_name -> wkbench.plugin.v1.MetricDef
-	10, // 26: wkbench.plugin.v1.UnitDefinition.artifacts:type_name -> wkbench.plugin.v1.ArtifactDef
-	8,  // 27: wkbench.plugin.v1.PortDef.meta:type_name -> wkbench.plugin.v1.PortMeta
-	29, // 28: wkbench.plugin.v1.RunRequest.inputs:type_name -> wkbench.plugin.v1.RunRequest.InputsEntry
-	18, // 29: wkbench.plugin.v1.RunEnvRequest.value:type_name -> wkbench.plugin.v1.PortValue
-	18, // 30: wkbench.plugin.v1.RunEnvResponse.value:type_name -> wkbench.plugin.v1.PortValue
-	20, // 31: wkbench.plugin.v1.MetricFlush.metrics:type_name -> wkbench.plugin.v1.MetricSnapshot
-	30, // 32: wkbench.plugin.v1.MetricSnapshot.labels:type_name -> wkbench.plugin.v1.MetricSnapshot.LabelsEntry
-	18, // 33: wkbench.plugin.v1.SetOutput.value:type_name -> wkbench.plugin.v1.PortValue
-	28, // 34: wkbench.plugin.v1.TerminalStatus.error:type_name -> wkbench.plugin.v1.Error
-	18, // 35: wkbench.plugin.v1.RunRequest.InputsEntry.value:type_name -> wkbench.plugin.v1.PortValue
-	36, // [36:36] is the sub-list for method output_type
-	36, // [36:36] is the sub-list for method input_type
-	36, // [36:36] is the sub-list for extension type_name
-	36, // [36:36] is the sub-list for extension extendee
-	0,  // [0:36] is the sub-list for field type_name
+	21, // 9: wkbench.plugin.v1.Frame.run_env_request:type_name -> wkbench.plugin.v1.RunEnvRequest
+	22, // 10: wkbench.plugin.v1.Frame.run_env_response:type_name -> wkbench.plugin.v1.RunEnvResponse
+	24, // 11: wkbench.plugin.v1.Frame.metric_flush:type_name -> wkbench.plugin.v1.MetricFlush
+	26, // 12: wkbench.plugin.v1.Frame.set_output:type_name -> wkbench.plugin.v1.SetOutput
+	32, // 13: wkbench.plugin.v1.Frame.terminal_status:type_name -> wkbench.plugin.v1.TerminalStatus
+	33, // 14: wkbench.plugin.v1.Frame.error:type_name -> wkbench.plugin.v1.Error
+	27, // 15: wkbench.plugin.v1.Frame.artifact_open:type_name -> wkbench.plugin.v1.ArtifactOpen
+	28, // 16: wkbench.plugin.v1.Frame.artifact_opened:type_name -> wkbench.plugin.v1.ArtifactOpened
+	29, // 17: wkbench.plugin.v1.Frame.artifact_chunk:type_name -> wkbench.plugin.v1.ArtifactChunk
+	30, // 18: wkbench.plugin.v1.Frame.artifact_close:type_name -> wkbench.plugin.v1.ArtifactClose
+	31, // 19: wkbench.plugin.v1.Frame.artifact_closed:type_name -> wkbench.plugin.v1.ArtifactClosed
+	16, // 20: wkbench.plugin.v1.Frame.start_request:type_name -> wkbench.plugin.v1.StartRequest
+	17, // 21: wkbench.plugin.v1.Frame.start_response:type_name -> wkbench.plugin.v1.StartResponse
+	18, // 22: wkbench.plugin.v1.Frame.stop_request:type_name -> wkbench.plugin.v1.StopRequest
+	19, // 23: wkbench.plugin.v1.Frame.stop_response:type_name -> wkbench.plugin.v1.StopResponse
+	20, // 24: wkbench.plugin.v1.Frame.background_event:type_name -> wkbench.plugin.v1.BackgroundEvent
+	3,  // 25: wkbench.plugin.v1.HandshakeResponse.manifest:type_name -> wkbench.plugin.v1.PluginManifest
+	6,  // 26: wkbench.plugin.v1.PluginManifest.units:type_name -> wkbench.plugin.v1.UnitDefinition
+	6,  // 27: wkbench.plugin.v1.ListUnitsResponse.units:type_name -> wkbench.plugin.v1.UnitDefinition
+	7,  // 28: wkbench.plugin.v1.UnitDefinition.inputs:type_name -> wkbench.plugin.v1.PortDef
+	7,  // 29: wkbench.plugin.v1.UnitDefinition.outputs:type_name -> wkbench.plugin.v1.PortDef
+	9,  // 30: wkbench.plugin.v1.UnitDefinition.metrics:type_name -> wkbench.plugin.v1.MetricDef
+	10, // 31: wkbench.plugin.v1.UnitDefinition.artifacts:type_name -> wkbench.plugin.v1.ArtifactDef
+	8,  // 32: wkbench.plugin.v1.PortDef.meta:type_name -> wkbench.plugin.v1.PortMeta
+	34, // 33: wkbench.plugin.v1.RunRequest.inputs:type_name -> wkbench.plugin.v1.RunRequest.InputsEntry
+	35, // 34: wkbench.plugin.v1.StartRequest.inputs:type_name -> wkbench.plugin.v1.StartRequest.InputsEntry
+	33, // 35: wkbench.plugin.v1.BackgroundEvent.error:type_name -> wkbench.plugin.v1.Error
+	23, // 36: wkbench.plugin.v1.RunEnvRequest.value:type_name -> wkbench.plugin.v1.PortValue
+	23, // 37: wkbench.plugin.v1.RunEnvResponse.value:type_name -> wkbench.plugin.v1.PortValue
+	25, // 38: wkbench.plugin.v1.MetricFlush.metrics:type_name -> wkbench.plugin.v1.MetricSnapshot
+	36, // 39: wkbench.plugin.v1.MetricSnapshot.labels:type_name -> wkbench.plugin.v1.MetricSnapshot.LabelsEntry
+	23, // 40: wkbench.plugin.v1.SetOutput.value:type_name -> wkbench.plugin.v1.PortValue
+	33, // 41: wkbench.plugin.v1.TerminalStatus.error:type_name -> wkbench.plugin.v1.Error
+	23, // 42: wkbench.plugin.v1.RunRequest.InputsEntry.value:type_name -> wkbench.plugin.v1.PortValue
+	23, // 43: wkbench.plugin.v1.StartRequest.InputsEntry.value:type_name -> wkbench.plugin.v1.PortValue
+	44, // [44:44] is the sub-list for method output_type
+	44, // [44:44] is the sub-list for method input_type
+	44, // [44:44] is the sub-list for extension type_name
+	44, // [44:44] is the sub-list for extension extendee
+	0,  // [0:44] is the sub-list for field type_name
 }
 
 func init() { file_benchkit_protocol_wkbench_plugin_proto_init() }
@@ -2408,6 +2814,11 @@ func file_benchkit_protocol_wkbench_plugin_proto_init() {
 		(*Frame_ArtifactChunk)(nil),
 		(*Frame_ArtifactClose)(nil),
 		(*Frame_ArtifactClosed)(nil),
+		(*Frame_StartRequest)(nil),
+		(*Frame_StartResponse)(nil),
+		(*Frame_StopRequest)(nil),
+		(*Frame_StopResponse)(nil),
+		(*Frame_BackgroundEvent)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2415,7 +2826,7 @@ func file_benchkit_protocol_wkbench_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_benchkit_protocol_wkbench_plugin_proto_rawDesc), len(file_benchkit_protocol_wkbench_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   31,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

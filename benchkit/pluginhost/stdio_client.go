@@ -714,6 +714,7 @@ func unitFromProto(unit *protocol.UnitDefinition, pluginName string) Unit {
 		Outputs:     portsFromProto(unit.GetOutputs()),
 		Metrics:     metricsFromProto(unit.GetMetrics()),
 		Artifacts:   artifactsFromProto(unit.GetArtifacts()),
+		Background:  unit.GetBackground(),
 	}
 }
 

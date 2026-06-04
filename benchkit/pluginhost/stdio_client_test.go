@@ -46,6 +46,70 @@ func TestStdioClientListsDemoPluginUnits(t *testing.T) {
 	}
 }
 
+func TestPluginManifestRoundTripsBackgroundUnit(t *testing.T) {
+	pluginPath := buildSourcePlugin(t, `
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/WuKongIM/wkbench/benchkit/contract"
+	wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type backgroundUnit struct{}
+
+func (backgroundUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.background_round_trip/v1"}
+}
+
+func (backgroundUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (backgroundUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+func (backgroundUnit) Run(context.Context, contract.RunEnv) error { return nil }
+func (backgroundUnit) Start(context.Context, contract.RunEnv) (contract.BackgroundTask, error) {
+	return noopBackgroundTask{}, nil
+}
+
+type noopBackgroundTask struct{}
+
+func (noopBackgroundTask) Stop(context.Context) error { return nil }
+func (noopBackgroundTask) Done() <-chan error {
+	ch := make(chan error)
+	return ch
+}
+
+func main() {
+	if err := wkplugin.Serve(wkplugin.Plugin{
+		Name: "background-round-trip",
+		Version: "dev",
+		Units: []contract.Unit{backgroundUnit{}},
+	}, os.Stdin, os.Stdout); err != nil {
+		os.Exit(1)
+	}
+}
+`)
+
+	client, err := StartStdioClient(context.Background(), pluginPath)
+	if err != nil {
+		t.Fatalf("start plugin: %v", err)
+	}
+	defer client.Close()
+
+	manifest, err := client.Handshake(context.Background())
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	if got := len(manifest.Units); got != 1 {
+		t.Fatalf("manifest unit count = %d, want 1", got)
+	}
+	if !manifest.Units[0].Background {
+		t.Fatalf("manifest unit Background = false, want true")
+	}
+}
+
 func TestStdioClientValidatePlanAndRunDemoPlugin(t *testing.T) {
 	bin := buildDemoPlugin(t)
 
@@ -606,6 +670,23 @@ func buildDemoPlugin(t *testing.T) string {
 	build.Dir = repoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build plugin: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func buildSourcePlugin(t *testing.T, source string) string {
+	t.Helper()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write plugin source: %v", err)
+	}
+	bin := filepath.Join(dir, "wkbench-source-plugin")
+	build := exec.Command("go", "build", "-o", bin, sourcePath)
+	build.Env = append(os.Environ(), "GOWORK=off")
+	build.Dir = repoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build source plugin: %v\n%s", err, out)
 	}
 	return bin
 }

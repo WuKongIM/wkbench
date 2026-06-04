@@ -450,6 +450,7 @@ func ManifestFromUnits(name, version string, units []contract.Unit) pluginhost.P
 	out := pluginhost.Plugin{Name: name, Version: version, Protocol: "wkbench.plugin/v1"}
 	for _, unit := range units {
 		def := unit.Definition()
+		_, background := unit.(contract.BackgroundUnit)
 		out.Units = append(out.Units, pluginhost.Unit{
 			Kind:        def.Kind,
 			Title:       def.Title,
@@ -458,6 +459,7 @@ func ManifestFromUnits(name, version string, units []contract.Unit) pluginhost.P
 			Outputs:     clonePortDefs(def.Outputs),
 			Metrics:     slices.Clone(def.Metrics),
 			Artifacts:   slices.Clone(def.Artifacts),
+			Background:  background,
 		})
 	}
 	return out
@@ -500,6 +502,7 @@ func unitToProto(unit pluginhost.Unit) *protocol.UnitDefinition {
 		Outputs:     portsToProto(unit.Outputs),
 		Metrics:     metricsToProto(unit.Metrics),
 		Artifacts:   artifactsToProto(unit.Artifacts),
+		Background:  unit.Background,
 	}
 }
 

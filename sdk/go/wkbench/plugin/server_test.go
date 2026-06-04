@@ -28,6 +28,19 @@ func TestManifestFromUnitsIncludesPortMetadata(t *testing.T) {
 	}
 }
 
+func TestManifestFromUnitsMarksBackgroundUnit(t *testing.T) {
+	manifest := ManifestFromUnits("test-plugin", "v1", []contract.Unit{
+		backgroundManifestUnit{},
+	})
+
+	if got := len(manifest.Units); got != 1 {
+		t.Fatalf("manifest unit count = %d, want 1", got)
+	}
+	if !manifest.Units[0].Background {
+		t.Fatalf("manifest unit Background = false, want true")
+	}
+}
+
 func TestManifestFromUnitsCopiesDefinitionSlices(t *testing.T) {
 	source := contract.Definition{
 		Kind: "demo.mutable/v1",
@@ -652,4 +665,34 @@ func (typedInputUnit) Run(ctx context.Context, env contract.RunEnv) error {
 	return env.SetOutput("response", map[string]any{
 		"summary": fmt.Sprintf("%s:%d", request.Message, request.Count),
 	})
+}
+
+type backgroundManifestUnit struct{}
+
+func (backgroundManifestUnit) Definition() contract.Definition {
+	return contract.Definition{Kind: "test.background_manifest/v1"}
+}
+
+func (backgroundManifestUnit) Validate(context.Context, contract.ValidateEnv) error {
+	return nil
+}
+
+func (backgroundManifestUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+	return contract.Plan{}, nil
+}
+
+func (backgroundManifestUnit) Run(context.Context, contract.RunEnv) error {
+	return nil
+}
+
+func (backgroundManifestUnit) Start(context.Context, contract.RunEnv) (contract.BackgroundTask, error) {
+	return noopBackgroundTask{}, nil
+}
+
+type noopBackgroundTask struct{}
+
+func (noopBackgroundTask) Stop(context.Context) error { return nil }
+func (noopBackgroundTask) Done() <-chan error {
+	ch := make(chan error)
+	return ch
 }
