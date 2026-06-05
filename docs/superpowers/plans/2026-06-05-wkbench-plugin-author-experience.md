@@ -503,6 +503,54 @@ func TestPluginCheckDirectPathIgnoresMissingConfiguredPlugin(t *testing.T) {
 	}
 }
 
+func TestPluginCheckDoubleDashTimeoutAfterTarget(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin, "--timeout", "2s"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("expected exitOK, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Plugin: wkbench.demo") {
+		t.Fatalf("plugin was not inspected:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckDirectPathIgnoresMalformedConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	writeMalformedPluginConfig(t, projectDir)
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", bin}, &stderr)
+	if code != exitOK {
+		t.Fatalf("direct plugin check should ignore malformed config, code = %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Plugin: wkbench.demo") {
+		t.Fatalf("plugin was not inspected:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckBareTargetReportsMalformedConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	writeMalformedPluginConfig(t, projectDir)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", "demo"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "plugin check failed") {
+		t.Fatalf("expected plugin check failure, got:\n%s", out)
+	}
+	for _, want := range []string{"plugins.yaml", "parse"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected malformed config error containing %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestPluginCheckTimesOutHungPlugin(t *testing.T) {
 	bin := buildHungPlugin(t)
 
@@ -520,6 +568,31 @@ func TestPluginCheckTimesOutHungPlugin(t *testing.T) {
 		t.Fatalf("expected timeout failure, got:\n%s", stderr.String())
 	}
 }
+
+func TestPluginCheckScenarioPlaceholderDoesNotStartPlugin(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", "missing-plugin", "--scenario", "./missing.yaml"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "plugin check -scenario support is added in the scenario validation task") {
+		t.Fatalf("expected deferred scenario message, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "plugin check failed") {
+		t.Fatalf("scenario placeholder should not inspect plugin, got:\n%s", stderr.String())
+	}
+}
+
+func writeMalformedPluginConfig(t *testing.T, projectDir string) {
+	t.Helper()
+	configDir := filepath.Join(projectDir, ".wkbench")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "plugins.yaml"), []byte("plugins:\n  - name: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 ```
 
 - [ ] **Step 2: Run the failing CLI tests**
@@ -527,11 +600,13 @@ func TestPluginCheckTimesOutHungPlugin(t *testing.T) {
 Run:
 
 ```bash
-GOWORK=off go test ./cmd/wkbench -run 'TestPluginCheck(SucceedsForExternalPlugin|ResolvesConfiguredPluginByName|DirectPathIgnoresMissingConfiguredPlugin|TimesOutHungPlugin)' -count=1
+GOWORK=off go test ./cmd/wkbench -run 'TestPluginCheck(SucceedsForExternalPlugin|ResolvesConfiguredPluginByName|DirectPathIgnoresMissingConfiguredPlugin|TimesOutHungPlugin|ScenarioPlaceholderDoesNotStartPlugin|DoubleDashTimeoutAfterTarget|DirectPathIgnoresMalformedConfig|BareTargetReportsMalformedConfig)' -count=1
 ```
 
-Expected: at least the configured-name and timeout cases fail because Task 1
-only accepts exactly one direct path and has no timeout parsing.
+Expected: at least the configured-name, timeout, double-dash timeout, and
+bare-target malformed config cases fail because Task 1 only accepts exactly one
+direct path, has no timeout parsing, and does not distinguish direct paths from
+bare configured names.
 
 - [ ] **Step 3: Add robust check argument parsing**
 
@@ -542,6 +617,10 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	options, code := parsePluginCheckArgs(args, stderr)
 	if code != exitOK {
 		return code
+	}
+	if options.ScenarioPath != "" {
+		fmt.Fprintln(stderr, "plugin check -scenario support is added in the scenario validation task")
+		return exitConfig
 	}
 	target, err := resolvePluginCheckTarget(options.Target)
 	if err != nil {
@@ -561,53 +640,87 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	if len(issues) > 0 {
 		return exitConfig
 	}
-	if options.ScenarioPath != "" {
-		fmt.Fprintln(stderr, "plugin check -scenario support is added in the scenario validation task")
-		return exitConfig
-	}
 	return exitOK
 }
 
 func parsePluginCheckArgs(args []string, stderr io.Writer) (pluginCheckOptions, int) {
 	options := pluginCheckOptions{Timeout: pluginManifestTimeout}
-	var flagArgs []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "-scenario" || arg == "-timeout":
-			if i+1 >= len(args) {
-				fmt.Fprintf(stderr, "%s requires a value\n", arg)
-				return pluginCheckOptions{}, exitConfig
-			}
-			flagArgs = append(flagArgs, arg, args[i+1])
-			i++
-		case strings.HasPrefix(arg, "-scenario=") || strings.HasPrefix(arg, "-timeout="):
-			flagArgs = append(flagArgs, arg)
-		case strings.HasPrefix(arg, "-"):
-			flagArgs = append(flagArgs, arg)
-		case options.Target == "":
-			options.Target = arg
-		default:
-			fmt.Fprintln(stderr, "usage: wkbench plugin check <name-or-path> [-scenario path] [-timeout duration]")
-			return pluginCheckOptions{}, exitConfig
-		}
-	}
 	fs := flag.NewFlagSet("plugin check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&options.ScenarioPath, "scenario", "", "optional scenario yaml to validate, explain, and plan with this plugin")
-	fs.DurationVar(&options.Timeout, "timeout", pluginManifestTimeout, "plugin handshake timeout")
-	if err := fs.Parse(flagArgs); err != nil {
-		return pluginCheckOptions{}, exitConfig
-	}
-	if options.Target == "" || fs.NArg() != 0 {
+	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: wkbench plugin check <name-or-path> [-scenario path] [-timeout duration]")
-		return pluginCheckOptions{}, exitConfig
 	}
+	fs.StringVar(&options.ScenarioPath, "scenario", "", "scenario path")
+	fs.DurationVar(&options.Timeout, "timeout", pluginManifestTimeout, "plugin manifest timeout")
+	if err := fs.Parse(pluginCheckInterspersedFlagArgs(args)); err != nil {
+		return options, exitConfig
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return options, exitConfig
+	}
+	options.Target = rest[0]
 	return options, exitOK
+}
+
+func pluginCheckInterspersedFlagArgs(args []string) []string {
+	flags := make([]string, 0, len(args))
+	targets := make([]string, 0, len(args))
+	sawTerminator := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			sawTerminator = true
+			targets = append(targets, args[i+1:]...)
+			break
+		}
+		if pluginCheckFlagTakesValue(arg) {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if pluginCheckFlagHasInlineValue(arg) {
+			flags = append(flags, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+			continue
+		}
+		targets = append(targets, arg)
+	}
+	ordered := make([]string, 0, len(args))
+	ordered = append(ordered, flags...)
+	if sawTerminator {
+		ordered = append(ordered, "--")
+	}
+	ordered = append(ordered, targets...)
+	return ordered
+}
+
+func pluginCheckFlagTakesValue(arg string) bool {
+	return arg == "-scenario" ||
+		arg == "--scenario" ||
+		arg == "-timeout" ||
+		arg == "--timeout"
+}
+
+func pluginCheckFlagHasInlineValue(arg string) bool {
+	return strings.HasPrefix(arg, "-scenario=") ||
+		strings.HasPrefix(arg, "--scenario=") ||
+		strings.HasPrefix(arg, "-timeout=") ||
+		strings.HasPrefix(arg, "--timeout=")
 }
 ```
 
-Add `flag` to the imports in `cmd/wkbench/plugin_check.go`.
+Add `flag` to the imports in `cmd/wkbench/plugin_check.go`. The parser must
+support `-timeout`, `--timeout`, `-timeout=...`, `--timeout=...`, `-scenario`,
+`--scenario`, `-scenario=...`, and `--scenario=...` before or after the
+target.
 
 - [ ] **Step 4: Add check target resolution**
 
@@ -623,7 +736,10 @@ func resolvePluginCheckTarget(target string) (pluginCheckTarget, error) {
 		return pluginCheckTarget{Label: target, Path: filepath.Clean(target)}, nil
 	}
 	configPath, cfg, ok, err := readProjectPluginConfig()
-	if err == nil && ok {
+	if err != nil {
+		return pluginCheckTarget{}, err
+	}
+	if ok {
 		projectDir := pluginConfigProjectDir(configPath)
 		for _, plugin := range cfg.Plugins {
 			if plugin.Name == target {
@@ -640,6 +756,12 @@ func pluginCheckTargetLooksLikePath(target string) bool {
 		strings.Contains(target, string(filepath.Separator))
 }
 ```
+
+Path-like targets return before reading plugin config, so direct checks ignore
+unrelated missing or malformed config. Bare-name targets read project config; if
+the config exists but cannot be read or parsed, return that error instead of
+falling through to PATH. If there is no config, or no matching entry in a
+readable config, fall back to `filepath.Clean(target)`.
 
 - [ ] **Step 5: Add timeout-aware inspect helper**
 
@@ -675,7 +797,7 @@ func inspectPluginManifestWithTimeout(path string, timeout time.Duration) (plugi
 Run:
 
 ```bash
-GOWORK=off go test ./cmd/wkbench -run 'TestPluginCheck(SucceedsForExternalPlugin|ResolvesConfiguredPluginByName|DirectPathIgnoresMissingConfiguredPlugin|TimesOutHungPlugin|ReportsInvalidManifest)' -count=1
+GOWORK=off go test ./cmd/wkbench -run 'TestPluginCheck(SucceedsForExternalPlugin|ResolvesConfiguredPluginByName|DirectPathIgnoresMissingConfiguredPlugin|TimesOutHungPlugin|ReportsInvalidManifest|ScenarioPlaceholderDoesNotStartPlugin|DoubleDashTimeoutAfterTarget|DirectPathIgnoresMalformedConfig|BareTargetReportsMalformedConfig)' -count=1
 ```
 
 Expected: PASS.
@@ -1259,7 +1381,9 @@ Spec coverage:
 
 - `wkbench plugin check`: Tasks 1, 2, and 3.
 - Manifest validation: Task 1.
-- Configured-name and direct-path behavior: Task 2.
+- Configured-name and direct-path behavior: Task 2. Path-like targets bypass
+  plugin config, while bare-name targets return plugin config read/parse errors
+  before falling back to PATH.
 - Timeout behavior: Task 2.
 - Scenario `validate`, `explain`, and `plan`: Task 3.
 - Scenario-mode plugin handshake timeout: Task 3.

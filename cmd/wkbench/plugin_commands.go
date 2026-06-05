@@ -188,7 +188,11 @@ func resolvePluginInspectTarget(target string) (string, error) {
 }
 
 func inspectPluginManifest(path string) (pluginhost.Plugin, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), pluginManifestTimeout)
+	return inspectPluginManifestWithTimeout(path, pluginManifestTimeout)
+}
+
+func inspectPluginManifestWithTimeout(path string, timeout time.Duration) (pluginhost.Plugin, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	client, err := pluginhost.StartStdioClient(ctx, path)
 	if err != nil {

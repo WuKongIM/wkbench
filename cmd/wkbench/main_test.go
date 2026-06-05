@@ -644,6 +644,128 @@ func TestPluginInspectPrintsManifestForConfiguredPlugin(t *testing.T) {
 	}
 }
 
+func TestPluginCheckSucceedsForExternalPlugin(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin}, &stderr)
+	if code != exitOK {
+		t.Fatalf("expected exitOK, got %d stderr:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{"Plugin check: ok", "Plugin: wkbench.demo", "demo.echo/v1"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("plugin check output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestPluginCheckResolvesConfiguredPluginByName(t *testing.T) {
+	projectDir := t.TempDir()
+	bin := buildDemoPlugin(t)
+	writePluginConfig(t, projectDir, "demo", bin)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", "demo"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("expected exitOK, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Plugin: wkbench.demo") {
+		t.Fatalf("configured plugin was not inspected:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckDirectPathIgnoresMissingConfiguredPlugin(t *testing.T) {
+	projectDir := t.TempDir()
+	writePluginConfig(t, projectDir, "missing", "./bin/missing-plugin")
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", bin}, &stderr)
+	if code != exitOK {
+		t.Fatalf("direct plugin check should ignore unrelated missing config, code = %d stderr:\n%s", code, stderr.String())
+	}
+}
+
+func TestPluginCheckDoubleDashTimeoutAfterTarget(t *testing.T) {
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin, "--timeout", "2s"}, &stderr)
+	if code != exitOK {
+		t.Fatalf("expected exitOK, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Plugin: wkbench.demo") {
+		t.Fatalf("plugin was not inspected:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckDirectPathIgnoresMalformedConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	writeMalformedPluginConfig(t, projectDir)
+	bin := buildDemoPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", bin}, &stderr)
+	if code != exitOK {
+		t.Fatalf("direct plugin check should ignore malformed config, code = %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Plugin: wkbench.demo") {
+		t.Fatalf("plugin was not inspected:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckBareTargetReportsMalformedConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	writeMalformedPluginConfig(t, projectDir)
+
+	var stderr bytes.Buffer
+	code := runInDirWithStderr(t, projectDir, []string{"plugin", "check", "demo"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "plugin check failed") {
+		t.Fatalf("expected plugin check failure, got:\n%s", out)
+	}
+	for _, want := range []string{"plugins.yaml", "parse"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected malformed config error containing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestPluginCheckTimesOutHungPlugin(t *testing.T) {
+	bin := buildHungPlugin(t)
+
+	var stderr bytes.Buffer
+	start := time.Now()
+	code := runWithStderr([]string{"plugin", "check", "-timeout", "50ms", bin}, &stderr)
+	elapsed := time.Since(start)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("plugin check should time out promptly, elapsed=%s stderr:\n%s", elapsed, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "plugin check failed") {
+		t.Fatalf("expected timeout failure, got:\n%s", stderr.String())
+	}
+}
+
+func TestPluginCheckScenarioPlaceholderDoesNotStartPlugin(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", "missing-plugin", "--scenario", "./missing.yaml"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "plugin check -scenario support is added in the scenario validation task") {
+		t.Fatalf("expected deferred scenario message, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "plugin check failed") {
+		t.Fatalf("scenario placeholder should not inspect plugin, got:\n%s", stderr.String())
+	}
+}
+
 func TestPluginCheckReportsInvalidManifest(t *testing.T) {
 	bin := buildInvalidManifestPlugin(t)
 
@@ -1561,6 +1683,17 @@ func writePluginConfig(t *testing.T, projectDir, name, path string) {
 	}
 	config := fmt.Sprintf("plugins:\n  - name: %s\n    path: %s\n", name, path)
 	if err := os.WriteFile(filepath.Join(configDir, "plugins.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeMalformedPluginConfig(t *testing.T, projectDir string) {
+	t.Helper()
+	configDir := filepath.Join(projectDir, ".wkbench")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "plugins.yaml"), []byte("plugins:\n  - name: [\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

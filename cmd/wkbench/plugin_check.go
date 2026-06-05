@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -31,26 +32,26 @@ type pluginCheckIssue struct {
 }
 
 func runPluginCheck(args []string, stderr io.Writer) int {
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: wkbench plugin check <path>")
+	options, code := parsePluginCheckArgs(args, stderr)
+	if code != exitOK {
+		return code
+	}
+	if options.ScenarioPath != "" {
+		fmt.Fprintln(stderr, "plugin check -scenario support is added in the scenario validation task")
 		return exitConfig
 	}
-	options := pluginCheckOptions{
-		Target:  args[0],
-		Timeout: pluginManifestTimeout,
-	}
-	target := pluginCheckTarget{
-		Label: options.Target,
-		Path:  pluginCheckCleanPath(options.Target),
-	}
-	manifest, err := inspectPluginManifest(target.Path)
+	target, err := resolvePluginCheckTarget(options.Target)
 	if err != nil {
-		manifest = pluginhost.Plugin{Source: target.Path}
-		writePluginCheckReport(stderr, manifest, []pluginCheckIssue{{
-			Subject: target.Label,
-			Message: fmt.Sprintf("inspect failed: %v", err),
-		}})
+		fmt.Fprintf(stderr, "plugin check failed: %v\n", err)
 		return exitConfig
+	}
+	manifest, err := inspectPluginManifestWithTimeout(target.Path, options.Timeout)
+	if err != nil {
+		fmt.Fprintf(stderr, "plugin check failed: %v\n", err)
+		return exitConfig
+	}
+	if manifest.Source == "" {
+		manifest.Source = target.Path
 	}
 	issues := validatePluginCheckManifest(manifest)
 	writePluginCheckReport(stderr, manifest, issues)
@@ -58,6 +59,108 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 		return exitConfig
 	}
 	return exitOK
+}
+
+func parsePluginCheckArgs(args []string, stderr io.Writer) (pluginCheckOptions, int) {
+	options := pluginCheckOptions{Timeout: pluginManifestTimeout}
+	fs := flag.NewFlagSet("plugin check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: wkbench plugin check <name-or-path> [-scenario path] [-timeout duration]")
+	}
+	fs.StringVar(&options.ScenarioPath, "scenario", "", "scenario path")
+	fs.DurationVar(&options.Timeout, "timeout", pluginManifestTimeout, "plugin manifest timeout")
+	if err := fs.Parse(pluginCheckInterspersedFlagArgs(args)); err != nil {
+		return options, exitConfig
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return options, exitConfig
+	}
+	options.Target = rest[0]
+	return options, exitOK
+}
+
+func pluginCheckInterspersedFlagArgs(args []string) []string {
+	flags := make([]string, 0, len(args))
+	targets := make([]string, 0, len(args))
+	sawTerminator := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			sawTerminator = true
+			targets = append(targets, args[i+1:]...)
+			break
+		}
+		if pluginCheckFlagTakesValue(arg) {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if pluginCheckFlagHasInlineValue(arg) {
+			flags = append(flags, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+			continue
+		}
+		targets = append(targets, arg)
+	}
+	ordered := make([]string, 0, len(args))
+	ordered = append(ordered, flags...)
+	if sawTerminator {
+		ordered = append(ordered, "--")
+	}
+	ordered = append(ordered, targets...)
+	return ordered
+}
+
+func pluginCheckFlagTakesValue(arg string) bool {
+	return arg == "-scenario" ||
+		arg == "--scenario" ||
+		arg == "-timeout" ||
+		arg == "--timeout"
+}
+
+func pluginCheckFlagHasInlineValue(arg string) bool {
+	return strings.HasPrefix(arg, "-scenario=") ||
+		strings.HasPrefix(arg, "--scenario=") ||
+		strings.HasPrefix(arg, "-timeout=") ||
+		strings.HasPrefix(arg, "--timeout=")
+}
+
+func resolvePluginCheckTarget(target string) (pluginCheckTarget, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return pluginCheckTarget{}, fmt.Errorf("plugin target is required")
+	}
+	if pluginCheckTargetLooksLikePath(target) {
+		return pluginCheckTarget{Label: target, Path: filepath.Clean(target)}, nil
+	}
+	configPath, cfg, ok, err := readProjectPluginConfig()
+	if err != nil {
+		return pluginCheckTarget{}, err
+	}
+	if ok {
+		projectDir := pluginConfigProjectDir(configPath)
+		for _, plugin := range cfg.Plugins {
+			if plugin.Name == target {
+				return pluginCheckTarget{Label: target, Path: resolvePluginPath(projectDir, plugin.Path)}, nil
+			}
+		}
+	}
+	return pluginCheckTarget{Label: target, Path: filepath.Clean(target)}, nil
+}
+
+func pluginCheckTargetLooksLikePath(target string) bool {
+	return filepath.IsAbs(target) ||
+		strings.HasPrefix(target, ".") ||
+		strings.Contains(target, string(filepath.Separator))
 }
 
 func validatePluginCheckManifest(manifest pluginhost.Plugin) []pluginCheckIssue {
@@ -256,8 +359,4 @@ func writePluginCheckPorts(w io.Writer, title string, ports []contract.PortDef) 
 func portCheckSummary(port contract.PortDef) string {
 	meta := port.Metadata()
 	return fmt.Sprintf("boundary=%s transport=%s reportable=%t sensitive=%t", meta.Boundary, meta.Transport, meta.Reportable, meta.Sensitive)
-}
-
-func pluginCheckCleanPath(path string) string {
-	return filepath.Clean(path)
 }
