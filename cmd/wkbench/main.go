@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
 	"github.com/WuKongIM/wkbench/benchkit/dsl"
@@ -139,9 +140,10 @@ func defaultRegistry() *registry.Registry {
 }
 
 type pluginCommandSpec struct {
-	Label string
-	Path  string
-	Args  []string
+	Label            string
+	Path             string
+	Args             []string
+	HandshakeTimeout time.Duration
 }
 
 func pluginPathSpecs(paths []string) []pluginCommandSpec {
@@ -177,7 +179,15 @@ func loadExternalPlugins(reg *registry.Registry, specs []pluginCommandSpec, stde
 			return nil, exitConfig
 		}
 		clients = append(clients, client)
-		manifest, err := client.Handshake(context.Background())
+		handshakeCtx := context.Background()
+		var cancel context.CancelFunc
+		if spec.HandshakeTimeout > 0 {
+			handshakeCtx, cancel = context.WithTimeout(context.Background(), spec.HandshakeTimeout)
+		}
+		manifest, err := client.Handshake(handshakeCtx)
+		if cancel != nil {
+			cancel()
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "plugin %s handshake failed: %v\n", label, err)
 			closePluginClients(clients, stderr)

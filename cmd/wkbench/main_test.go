@@ -659,6 +659,27 @@ func TestPluginCheckSucceedsForExternalPlugin(t *testing.T) {
 	}
 }
 
+func TestPluginCheckScenarioValidatesExplainsAndPlans(t *testing.T) {
+	bin := buildDemoPlugin(t)
+	scenarioPath := filepath.Join(repoRoot(t), "examples", "plugin-echo.yaml")
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin, "-scenario", scenarioPath}, &stderr)
+	if code != exitOK {
+		t.Fatalf("expected exitOK, got %d stderr:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Scenario: " + scenarioPath,
+		"validate: ok",
+		"explain: ok",
+		"plan: ok",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("plugin check scenario output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
 func TestPluginCheckResolvesConfiguredPluginByName(t *testing.T) {
 	projectDir := t.TempDir()
 	bin := buildDemoPlugin(t)
@@ -752,17 +773,24 @@ func TestPluginCheckTimesOutHungPlugin(t *testing.T) {
 	}
 }
 
-func TestPluginCheckScenarioPlaceholderDoesNotStartPlugin(t *testing.T) {
+func TestPluginCheckScenarioStartsTargetPluginBeforeLoadingScenario(t *testing.T) {
+	missingPlugin := filepath.Join(t.TempDir(), "missing-plugin")
+
 	var stderr bytes.Buffer
-	code := runWithStderr([]string{"plugin", "check", "missing-plugin", "--scenario", "./missing.yaml"}, &stderr)
+	code := runWithStderr([]string{"plugin", "check", missingPlugin, "--scenario", "./missing.yaml"}, &stderr)
 	if code != exitConfig {
 		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "plugin check -scenario support is added in the scenario validation task") {
-		t.Fatalf("expected deferred scenario message, got:\n%s", stderr.String())
+	for _, want := range []string{
+		"Scenario: ./missing.yaml",
+		"failed to start",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("plugin check scenario output missing %q:\n%s", want, stderr.String())
+		}
 	}
-	if strings.Contains(stderr.String(), "plugin check failed") {
-		t.Fatalf("scenario placeholder should not inspect plugin, got:\n%s", stderr.String())
+	if strings.Contains(stderr.String(), "open scenario failed") {
+		t.Fatalf("scenario file should not load before plugin start succeeds:\n%s", stderr.String())
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/WuKongIM/wkbench/benchkit/contract"
+	"github.com/WuKongIM/wkbench/benchkit/kernel"
 	"github.com/WuKongIM/wkbench/benchkit/pluginhost"
 )
 
@@ -36,14 +38,13 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	if code != exitOK {
 		return code
 	}
-	if options.ScenarioPath != "" {
-		fmt.Fprintln(stderr, "plugin check -scenario support is added in the scenario validation task")
-		return exitConfig
-	}
 	target, err := resolvePluginCheckTarget(options.Target)
 	if err != nil {
 		fmt.Fprintf(stderr, "plugin check failed: %v\n", err)
 		return exitConfig
+	}
+	if options.ScenarioPath != "" {
+		return runPluginCheckScenario(target, options.ScenarioPath, options.Timeout, stderr)
 	}
 	manifest, err := inspectPluginManifestWithTimeout(target.Path, options.Timeout)
 	if err != nil {
@@ -58,6 +59,42 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	if len(issues) > 0 {
 		return exitConfig
 	}
+	return exitOK
+}
+
+func runPluginCheckScenario(target pluginCheckTarget, scenarioPath string, timeout time.Duration, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "Scenario: %s\n", scenarioPath)
+	reg := defaultRegistry()
+	clients, code := loadExternalPlugins(reg, []pluginCommandSpec{{
+		Label:            target.Label,
+		Path:             target.Path,
+		HandshakeTimeout: timeout,
+	}}, stderr)
+	if code != exitOK {
+		return code
+	}
+	defer closePluginClients(clients, stderr)
+
+	scenario, code := loadScenario(scenarioPath, stderr)
+	if code != exitOK {
+		return code
+	}
+	engine := kernel.New(reg)
+	if err := engine.Validate(context.Background(), scenario); err != nil {
+		fmt.Fprintf(stderr, "  validate: failed: %v\n", err)
+		return exitConfig
+	}
+	fmt.Fprintln(stderr, "  validate: ok")
+	if _, err := engine.Explain(context.Background(), scenario); err != nil {
+		fmt.Fprintf(stderr, "  explain: failed: %v\n", err)
+		return exitConfig
+	}
+	fmt.Fprintln(stderr, "  explain: ok")
+	if _, err := engine.Plan(context.Background(), scenario); err != nil {
+		fmt.Fprintf(stderr, "  plan: failed: %v\n", err)
+		return exitConfig
+	}
+	fmt.Fprintln(stderr, "  plan: ok")
 	return exitOK
 }
 
