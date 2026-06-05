@@ -644,6 +644,17 @@ func TestPluginInspectPrintsManifestForConfiguredPlugin(t *testing.T) {
 	}
 }
 
+func TestPluginCommandUsageMentionsCheck(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin"}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "check") {
+		t.Fatalf("plugin usage should mention check:\n%s", stderr.String())
+	}
+}
+
 func TestPluginCheckSucceedsForExternalPlugin(t *testing.T) {
 	bin := buildDemoPlugin(t)
 

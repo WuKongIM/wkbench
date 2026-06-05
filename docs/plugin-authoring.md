@@ -88,8 +88,14 @@ GOWORK=off go run ./cmd/wkbench plugin init \
   -module example.com/acme/wkbench-plugin \
   -name acme.echo
 cd /tmp/acme-wkbench-plugin
-go test ./...
-go build -o ./bin/acme-echo-plugin ./cmd/acme-echo-plugin
+WKBENCH=/path/to/wkbench ./scripts/check.sh
+```
+
+The generated check script runs `go test ./...`, builds the plugin binary, and
+executes:
+
+```bash
+wkbench plugin check ./bin/acme-echo-plugin -scenario ./examples/echo.yaml
 ```
 
 Register it in a wkbench project:
@@ -170,15 +176,18 @@ plugins:
 Relative plugin paths are resolved from the project directory containing
 `.wkbench`. `enabled` defaults to true when omitted.
 
-Management commands do not all start plugins:
+Management commands have distinct roles:
 
-- `wkbench plugin list` prints configured plugins without starting them.
+- `wkbench plugin check <name-or-path> [-scenario path]` is for plugin authors
+  and CI. It starts one plugin, validates its manifest, and optionally runs
+  scenario `validate`, `explain`, and `plan` with only that plugin loaded.
+- `wkbench plugin inspect <name-or-path>` prints one plugin manifest.
 - `wkbench plugin add <name> <path>` creates or updates `.wkbench/plugins.yaml`.
-- `wkbench plugin init -dir <dir> -module <module> -name <name>` generates a
-  standalone Go plugin module.
+- `wkbench plugin list` prints configured plugins without starting them.
 - `wkbench plugin doctor` starts enabled configured plugins, performs the
   handshake, and reports manifest/unit status.
-- `wkbench plugin inspect <name-or-path>` prints one plugin manifest.
+- `wkbench plugin init -dir <dir> -module <module> -name <name>` generates a
+  standalone Go plugin module.
 
 `plugin add`, `plugin init`, and `plugin list` are safe to run even when an
 existing configured plugin path is missing. Use `plugin doctor` when you want
