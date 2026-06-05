@@ -827,6 +827,39 @@ func TestPluginCheckReportsInvalidManifest(t *testing.T) {
 	}
 }
 
+func TestPluginCheckScenarioReportsInvalidManifest(t *testing.T) {
+	bin := buildInvalidManifestPlugin(t)
+	scenarioPath := writeScenarioFile(t, `
+version: wkbench/v2
+run:
+  id: invalid-plugin-check
+units:
+  groups:
+    use: core.static_groups
+    spec:
+      groups: [g1]
+`)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin, "-scenario", scenarioPath}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Scenario: " + scenarioPath,
+		"Plugin check: failed",
+		"unit kind \"bad.echo\" must end with /vN",
+		"artifact name is required",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("plugin check scenario output missing %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "validate: ok") {
+		t.Fatalf("scenario validation should not run after manifest issues:\n%s", stderr.String())
+	}
+}
+
 func TestPluginAddFromSubdirStoresPathRelativeToProjectConfig(t *testing.T) {
 	projectDir := t.TempDir()
 	configDir := filepath.Join(projectDir, ".wkbench")

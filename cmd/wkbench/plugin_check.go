@@ -46,9 +46,13 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	if options.ScenarioPath != "" {
 		return runPluginCheckScenario(target, options.ScenarioPath, options.Timeout, stderr)
 	}
-	manifest, err := inspectPluginManifestWithTimeout(target.Path, options.Timeout)
+	return runPluginCheckManifest(target, options.Timeout, stderr)
+}
+
+func runPluginCheckManifest(target pluginCheckTarget, timeout time.Duration, stderr io.Writer) int {
+	manifest, err := inspectPluginManifestWithTimeout(target.Path, timeout)
 	if err != nil {
-		fmt.Fprintf(stderr, "plugin check failed: %v\n", err)
+		writePluginCheckInspectError(stderr, target, err)
 		return exitConfig
 	}
 	if manifest.Source == "" {
@@ -62,8 +66,19 @@ func runPluginCheck(args []string, stderr io.Writer) int {
 	return exitOK
 }
 
+func writePluginCheckInspectError(w io.Writer, target pluginCheckTarget, err error) {
+	if strings.HasPrefix(err.Error(), "start plugin:") {
+		fmt.Fprintf(w, "plugin %s failed to start: %v\n", target.Label, err)
+		return
+	}
+	fmt.Fprintf(w, "plugin check failed: %v\n", err)
+}
+
 func runPluginCheckScenario(target pluginCheckTarget, scenarioPath string, timeout time.Duration, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "Scenario: %s\n", scenarioPath)
+	if code := runPluginCheckManifest(target, timeout, stderr); code != exitOK {
+		return code
+	}
 	reg := defaultRegistry()
 	clients, code := loadExternalPlugins(reg, []pluginCommandSpec{{
 		Label:            target.Label,
