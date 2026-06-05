@@ -644,6 +644,28 @@ func TestPluginInspectPrintsManifestForConfiguredPlugin(t *testing.T) {
 	}
 }
 
+func TestPluginCheckReportsInvalidManifest(t *testing.T) {
+	bin := buildInvalidManifestPlugin(t)
+
+	var stderr bytes.Buffer
+	code := runWithStderr([]string{"plugin", "check", bin}, &stderr)
+	if code != exitConfig {
+		t.Fatalf("expected exitConfig, got %d stderr:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Plugin check: failed",
+		"unit kind \"bad.echo\" must end with /vN",
+		"unit kind \"bad.echo\" is declared more than once",
+		"output secret is sensitive; sensitive inline data ports cannot cross plugin RPC in Phase 1",
+		"output secret encodings must include json for Phase 1 inline transport",
+		"artifact name is required",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("plugin check output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
 func TestPluginAddFromSubdirStoresPathRelativeToProjectConfig(t *testing.T) {
 	projectDir := t.TempDir()
 	configDir := filepath.Join(projectDir, ".wkbench")
@@ -967,6 +989,71 @@ func main() {
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build hung plugin: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func buildInvalidManifestPlugin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "main.go")
+	source := `
+package main
+
+import (
+    "context"
+    "os"
+
+    "github.com/WuKongIM/wkbench/benchkit/contract"
+    wkplugin "github.com/WuKongIM/wkbench/sdk/go/wkbench/plugin"
+)
+
+type badUnit struct{}
+
+func (badUnit) Definition() contract.Definition {
+    return contract.Definition{
+        Kind: "bad.echo",
+        Outputs: []contract.PortDef{
+            {
+                Name: "secret",
+                Type: "port.bad.secret/v1",
+                Meta: contract.PortMeta{
+                    Boundary: contract.PortBoundaryData,
+                    Transport: contract.PortTransportInline,
+                    Encodings: []string{"JSON"},
+                    Sensitive: true,
+                },
+            },
+        },
+        Artifacts: []contract.ArtifactDef{{}},
+    }
+}
+
+func (badUnit) Validate(context.Context, contract.ValidateEnv) error { return nil }
+func (badUnit) Plan(context.Context, contract.PlanEnv) (contract.Plan, error) {
+    return contract.Plan{}, nil
+}
+func (badUnit) Run(context.Context, contract.RunEnv) error { return nil }
+
+func main() {
+    if err := wkplugin.Serve(wkplugin.Plugin{
+        Name: "bad.plugin",
+        Version: "0.1.0",
+        Units: []contract.Unit{badUnit{}, badUnit{}},
+    }, os.Stdin, os.Stdout); err != nil {
+        os.Exit(1)
+    }
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bad-plugin")
+	cmd := exec.Command("go", "build", "-o", bin, sourcePath)
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build invalid manifest plugin: %v\n%s", err, out)
 	}
 	return bin
 }

@@ -16,7 +16,7 @@ const pluginManifestTimeout = 2 * time.Second
 
 func runPluginCommand(args []string, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: wkbench plugin <add|list|doctor|inspect|init>")
+		fmt.Fprintln(stderr, "usage: wkbench plugin <add|list|doctor|inspect|init|check>")
 		return exitConfig
 	}
 	switch args[0] {
@@ -30,6 +30,8 @@ func runPluginCommand(args []string, stderr io.Writer) int {
 		return runPluginInspect(args[1:], stderr)
 	case "init":
 		return runPluginInit(args[1:], stderr)
+	case "check":
+		return runPluginCheck(args[1:], stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown plugin command %q\n", args[0])
 		return exitConfig
