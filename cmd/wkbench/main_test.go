@@ -934,7 +934,18 @@ func TestNewUnitCommandIgnoresMissingConfiguredPluginPath(t *testing.T) {
 }
 
 func TestPluginInitGeneratesBuildableExternalPlugin(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "acme-plugin")
+	parent := t.TempDir()
+	sibling := filepath.Join(parent, "sibling")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "go.mod"), []byte("module example.com/sibling\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "go.work"), []byte("go 1.23.0\n\nuse ./sibling\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(parent, "acme-plugin")
 
 	var stderr bytes.Buffer
 	code := runWithStderr([]string{
@@ -951,10 +962,27 @@ func TestPluginInitGeneratesBuildableExternalPlugin(t *testing.T) {
 		filepath.Join("cmd", "acme-echo-plugin", "main.go"),
 		filepath.Join("units", "echo", "unit.go"),
 		filepath.Join("examples", "echo.yaml"),
+		filepath.Join("scripts", "check.sh"),
 		"README.md",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
 			t.Fatalf("%s not generated: %v", path, err)
+		}
+	}
+	scriptInfo, err := os.Stat(filepath.Join(dir, "scripts", "check.sh"))
+	if err != nil {
+		t.Fatalf("check script not generated: %v", err)
+	}
+	if scriptInfo.Mode()&0o111 == 0 {
+		t.Fatalf("check script should be executable, mode=%s", scriptInfo.Mode())
+	}
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"wkbench plugin check", "scripts/check.sh", "Phase 1"} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("generated README missing %q:\n%s", want, readme)
 		}
 	}
 	testCmd := exec.Command("go", "test", "./...")
@@ -978,6 +1006,26 @@ func TestPluginInitGeneratesBuildableExternalPlugin(t *testing.T) {
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("generated plugin binary does not build: %v\n%s", err, out)
+	}
+	wkbenchBin := filepath.Join(t.TempDir(), "wkbench")
+	buildWKBench := exec.Command("go", "build", "-o", wkbenchBin, "./cmd/wkbench")
+	buildWKBench.Dir = repoRoot(t)
+	buildWKBench.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := buildWKBench.CombinedOutput(); err != nil {
+		t.Fatalf("build wkbench binary for generated script: %v\n%s", err, out)
+	}
+	script := exec.Command("sh", "./scripts/check.sh")
+	script.Dir = dir
+	scriptEnv := make([]string, 0, len(os.Environ())+1)
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, "GOWORK=") {
+			continue
+		}
+		scriptEnv = append(scriptEnv, env)
+	}
+	script.Env = append(scriptEnv, "WKBENCH="+wkbenchBin)
+	if out, err := script.CombinedOutput(); err != nil {
+		t.Fatalf("generated check script failed: %v\n%s", err, out)
 	}
 	var validateStderr bytes.Buffer
 	code = runWithStderr([]string{"-plugin", bin, "validate", "-scenario", filepath.Join(dir, "examples", "echo.yaml")}, &validateStderr)
